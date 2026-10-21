@@ -57,10 +57,11 @@ xattr -dr com.apple.quarantine "$PKG" 2>/dev/null || true
 # ── 2. Expand the package (pkgutil needs no admin) ──────────────────────────
 log "Expanding $PKG ..."
 WORK="$(mktemp -d)"
+EXTRACT="$WORK/expand"   # pkgutil requires a destination that does not exist yet
 trap 'rm -rf "$WORK"' EXIT
-pkgutil --expand-full "$PKG" "$WORK" || fail "pkgutil --expand-full failed"
+pkgutil --expand-full "$PKG" "$EXTRACT" || fail "pkgutil --expand-full failed"
 
-SERVER_BIN="$(find "$WORK" -type f -path '*/runtime/supersqe-server' | head -n 1)"
+SERVER_BIN="$(find "$EXTRACT" -type f -path '*/runtime/supersqe-server' | head -n 1)"
 [ -n "$SERVER_BIN" ] || fail "payload not found inside the package (unexpected layout)"
 PAYLOAD_DIR="$(dirname "$(dirname "$SERVER_BIN")")"
 
