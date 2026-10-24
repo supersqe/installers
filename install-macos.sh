@@ -116,6 +116,17 @@ log 'SHA-256 of the downloaded package:'
 warn "$(shasum -a 256 "$OUT" | awk '{print $1}')"
 warn 'Compare it with the checksum on https://www.supersqe.com/downloads'
 
+# ---- Administrator access (needed by the system package installer) --------
+if ! sudo -n true 2>/dev/null; then
+  log 'Administrator privileges are required to install the system package.'
+  warn 'You will be asked for your macOS password.'
+  if ! sudo -v; then
+    fail 'This account cannot install system packages. Use the portable installer instead (no admin needed):
+    curl -fsSL -o ~/portable-install-macos.sh https://raw.githubusercontent.com/supersqe/installers/main/portable-install-macos.sh
+    bash ~/portable-install-macos.sh'
+  fi
+fi
+
 # ---- Configure the package (postinstall reads these) ----------------------
 log "Configuring port $PORT"
 defaults write com.supersqe.server port -int "$PORT" 2>/dev/null || true
@@ -129,7 +140,7 @@ fi
 # ---- Install (with live progress) -----------------------------------------
 log 'Installing (accept the EULA if prompted)...'
 INSTALL_LOG="$(mktemp -t supersqe-install)"
-sudo installer -pkg "$OUT" -target / -allowUntrusted -verboseR >"$INSTALL_LOG" 2>&1 &
+sudo -n installer -pkg "$OUT" -target / -allowUntrusted -verboseR >"$INSTALL_LOG" 2>&1 &
 INSTALL_PID=$!
 INSTALL_START=$(date +%s)
 LAST_PHASE=""
