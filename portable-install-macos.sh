@@ -109,6 +109,19 @@ fi
 [ -f "$PKG" ] || fail "package not found: $PKG"
 xattr -dr com.apple.quarantine "$PKG" 2>/dev/null || true
 
+# ---- 1b. Verify the package checksum (GitHub release digest) --------------
+ACTUAL_SHA="$(shasum -a 256 "$PKG" | awk '{print $1}')"
+EXPECTED_SHA="$(curl -fsSL --max-time 20 "https://api.github.com/repos/supersqe/installers/releases/tags/v$VERSION" 2>/dev/null \
+  | tr '}' '\n' | grep -F "\"name\": \"$(basename "$PKG")\"" \
+  | grep -o 'sha256:[0-9a-f]*' | head -n 1 | cut -d: -f2)"
+if [ -n "$EXPECTED_SHA" ]; then
+  [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ] || fail "checksum mismatch for $PKG (expected $EXPECTED_SHA, got $ACTUAL_SHA)"
+  log "SHA-256 verified: $ACTUAL_SHA"
+else
+  warn "SHA-256: $ACTUAL_SHA"
+  warn "Compare it with https://www.supersqe.com/downloads"
+fi
+
 # ---- 2. Expand the package (pkgutil needs no admin) -----------------------
 log "Expanding $PKG ..."
 WORK="$(mktemp -d)"

@@ -138,9 +138,17 @@ if [ ! -f "$OUT" ]; then
 fi
 xattr -dr com.apple.quarantine "$OUT" 2>/dev/null || true
 
-log 'SHA-256 of the downloaded package:'
-warn "$(shasum -a 256 "$OUT" | awk '{print $1}')"
-warn 'Compare it with the checksum on https://www.supersqe.com/downloads'
+ACTUAL_SHA="$(shasum -a 256 "$OUT" | awk '{print $1}')"
+EXPECTED_SHA="$(curl -fsSL --max-time 20 "https://api.github.com/repos/supersqe/installers/releases/tags/v$VERSION" 2>/dev/null \
+  | tr '}' '\n' | grep -F "\"name\": \"$(basename "$OUT")\"" \
+  | grep -o 'sha256:[0-9a-f]*' | head -n 1 | cut -d: -f2)"
+if [ -n "$EXPECTED_SHA" ]; then
+  [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ] || fail "Checksum mismatch for $OUT (expected $EXPECTED_SHA, got $ACTUAL_SHA)."
+  log "SHA-256 verified: $ACTUAL_SHA"
+else
+  warn "SHA-256: $ACTUAL_SHA"
+  warn 'Compare it with the checksum on https://www.supersqe.com/downloads'
+fi
 
 # ---- Prepare the payload package -----------------------------------------
 # The product licence in the Distribution is displayed by the GUI Installer;
