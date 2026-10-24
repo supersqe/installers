@@ -47,12 +47,6 @@ draw_bar() {
 
 [ "$(uname -s)" = "Darwin" ] || fail "This script is for macOS."
 
-# ---- Administrator access -------------------------------------------------
-if ! sudo -n true 2>/dev/null; then
-  warn 'Administrator access is required - enter your Mac password when prompted.'
-  sudo -v || fail 'Administrator access is required to install SuperSQE.'
-fi
-
 warn 'Note: the installation can take up to 20 minutes depending on your network'
 warn 'speed and Mac configuration (the first boot prepares the database).'
 
@@ -100,6 +94,27 @@ while true; do
   esac
 done
 
+# ---- Administrator access (or per-user fallback) --------------------------
+PORTABLE_URL="https://raw.githubusercontent.com/supersqe/installers/main/portable-install-macos.sh"
+run_portable_install() {
+  warn 'Switching to the per-user portable install (no administrator rights needed).'
+  local tmp
+  tmp="$(mktemp /tmp/supersqe-portable.XXXXXX)"
+  curl -fSL --progress-bar -o "$tmp" "$PORTABLE_URL" || fail 'Could not download the portable installer.'
+  if [ -n "${OUT:-}" ] && [ -f "$OUT" ]; then
+    SUPERSQE_PORT="$PORT" SUPERSQE_ADMIN_EMAIL="$ADMIN_EMAIL" bash "$tmp" "$OUT"
+  else
+    SUPERSQE_PORT="$PORT" SUPERSQE_ADMIN_EMAIL="$ADMIN_EMAIL" bash "$tmp"
+  fi
+  local rc=$?
+  rm -f "$tmp"
+  exit $rc
+}
+if ! id -Gn 2>/dev/null | tr ' ' '\n' | grep -qx admin; then
+  warn 'This account is not a macOS administrator.'
+  run_portable_install
+fi
+
 # ---- Download -------------------------------------------------------------
 ARCH="$(uname -m)"; [ "$ARCH" = "arm64" ] || ARCH=x64
 PKG="supersqe-macos-$ARCH-v$VERSION.pkg"
@@ -116,15 +131,10 @@ log 'SHA-256 of the downloaded package:'
 warn "$(shasum -a 256 "$OUT" | awk '{print $1}')"
 warn 'Compare it with the checksum on https://www.supersqe.com/downloads'
 
-# ---- Administrator access (needed by the system package installer) --------
-if ! sudo -n true 2>/dev/null; then
-  log 'Administrator privileges are required to install the system package.'
-  warn 'You will be asked for your macOS password.'
-  if ! sudo -v; then
-    fail 'This account cannot install system packages. Use the portable installer instead (no admin needed):
-    curl -fsSL -o ~/portable-install-macos.sh https://raw.githubusercontent.com/supersqe/installers/main/portable-install-macos.sh
-    bash ~/portable-install-macos.sh'
-  fi
+# ---- Administrator authentication (right before the system install) ------
+if ! sudo -v; then
+  warn 'Administrator authentication was not completed.'
+  run_portable_install
 fi
 
 # ---- Configure the package (postinstall reads these) ----------------------
