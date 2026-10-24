@@ -146,12 +146,14 @@ EOF
 
 echo "==> Creating the SuperSQE Runner shortcut"
 NODE_Q="$(printf '%q' "$NODE")"
+RUNNER_Q="$(printf '%q' "$RUNNER_DIR")"
 cat > "$RUNNER_DIR/start-runner.sh" <<EOF
 #!/bin/bash
-cd "\$(dirname "\$0")" || exit 1
+RUNNER_DIR=$RUNNER_Q
+cd "\$RUNNER_DIR" || exit 1
 NODE_BIN=$NODE_Q
 if [ ! -x "\$NODE_BIN" ]; then NODE_BIN="\$(command -v node)"; fi
-CFG="\$(pwd)/runner.config.json"
+CFG="\$RUNNER_DIR/runner.config.json"
 export SUPERSQE_URL="\$("\$NODE_BIN" -e 'const c=require(process.argv[1]);process.stdout.write(c.server)' "\$CFG")"
 export SUPERSQE_AGENT_TOKEN="\$("\$NODE_BIN" -e 'const c=require(process.argv[1]);process.stdout.write(c.token)' "\$CFG")"
 export SUPERSQE_AGENT_NAME="\$("\$NODE_BIN" -e 'const c=require(process.argv[1]);process.stdout.write(c.name)' "\$CFG")"
@@ -159,7 +161,7 @@ echo ""
 echo "Connecting to \$SUPERSQE_URL as \$SUPERSQE_AGENT_NAME..."
 echo "Leave this window open while this Mac is online. Close it to go offline."
 echo ""
-"\$NODE_BIN" agent.js
+"\$NODE_BIN" "\$RUNNER_DIR/agent.js"
 echo ""
 read -n 1 -s -r -p "The runner has stopped. Press any key to close..."
 echo ""
