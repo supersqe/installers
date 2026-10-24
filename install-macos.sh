@@ -95,7 +95,7 @@ while true; do
 done
 
 # ---- Administrator access (or per-user fallback) --------------------------
-PORTABLE_URL="https://raw.githubusercontent.com/supersqe/installers/main/portable-install-macos.sh"
+PORTABLE_URL="https://www.supersqe.com/portable-install-macos.sh"
 run_portable_install() {
   warn 'Switching to the per-user portable install (no administrator rights needed).'
   local tmp
