@@ -140,9 +140,13 @@ xattr -dr com.apple.quarantine "$OUT" 2>/dev/null || true
 
 log 'Verifying the package checksum...'
 ACTUAL_SHA="$(shasum -a 256 "$OUT" | awk '{print $1}')"
-EXPECTED_SHA="$(curl -fsSL --max-time 20 "https://api.github.com/repos/supersqe/installers/releases/tags/v$VERSION" 2>/dev/null \
-  | tr '}' '\n' | grep -F "\"name\": \"$(basename "$OUT")\"" \
-  | grep -o 'sha256:[0-9a-f]*' | head -n 1 | cut -d: -f2)"
+EXPECTED_SHA=""
+API_JSON="$(curl -fsSL --connect-timeout 5 --max-time 20 "https://api.github.com/repos/supersqe/installers/releases/tags/v$VERSION" 2>/dev/null || true)"
+if [ -n "$API_JSON" ]; then
+  EXPECTED_SHA="$(printf '%s' "$API_JSON" | tr '}' '\n' \
+    | grep -F "\"name\": \"$(basename "$OUT")\"" \
+    | grep -o 'sha256:[0-9a-f]*' | sed -n '1p' | cut -d: -f2 | tr -d '\r' || true)"
+fi
 if [ -n "$EXPECTED_SHA" ]; then
   [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ] || fail "Checksum mismatch for $OUT (expected $EXPECTED_SHA, got $ACTUAL_SHA)."
   log "SHA-256 verified: $ACTUAL_SHA"
@@ -175,7 +179,7 @@ if [ -n "$EXPAND_DIR" ]; then
   echo
 fi
 if [ -n "$EXPAND_DIR" ] && [ -d "$EXPAND_DIR" ]; then
-  CANDIDATE="$(find "$EXPAND_DIR" -name '*.pkg' 2>/dev/null | head -n 1)"
+  CANDIDATE="$(find "$EXPAND_DIR" -name '*.pkg' 2>/dev/null | sed -n '1p')"
   if [ -n "$CANDIDATE" ] && [ -d "$CANDIDATE" ]; then
     if pkgutil --flatten "$CANDIDATE" "$EXPAND_DIR/payload.pkg" >/dev/null 2>&1; then
       CANDIDATE="$EXPAND_DIR/payload.pkg"
@@ -263,7 +267,8 @@ while kill -0 "$INSTALL_PID" 2>/dev/null; do
   LAST_PHASE="$PHASE"
   sleep 1
 done
-wait "$INSTALL_PID"; INSTALL_RC=$?
+INSTALL_RC=0
+wait "$INSTALL_PID" || INSTALL_RC=$?
 echo
 if [ "$INSTALL_RC" -ne 0 ]; then
   echo "--- installer output ---"; cat "$INSTALL_LOG"

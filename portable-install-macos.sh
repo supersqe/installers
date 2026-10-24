@@ -112,9 +112,13 @@ xattr -dr com.apple.quarantine "$PKG" 2>/dev/null || true
 # ---- 1b. Verify the package checksum (GitHub release digest) --------------
 log 'Verifying the package checksum...'
 ACTUAL_SHA="$(shasum -a 256 "$PKG" | awk '{print $1}')"
-EXPECTED_SHA="$(curl -fsSL --max-time 20 "https://api.github.com/repos/supersqe/installers/releases/tags/v$VERSION" 2>/dev/null \
-  | tr '}' '\n' | grep -F "\"name\": \"$(basename "$PKG")\"" \
-  | grep -o 'sha256:[0-9a-f]*' | head -n 1 | cut -d: -f2)"
+EXPECTED_SHA=""
+API_JSON="$(curl -fsSL --connect-timeout 5 --max-time 20 "https://api.github.com/repos/supersqe/installers/releases/tags/v$VERSION" 2>/dev/null || true)"
+if [ -n "$API_JSON" ]; then
+  EXPECTED_SHA="$(printf '%s' "$API_JSON" | tr '}' '\n' \
+    | grep -F "\"name\": \"$(basename "$PKG")\"" \
+    | grep -o 'sha256:[0-9a-f]*' | sed -n '1p' | cut -d: -f2 | tr -d '\r' || true)"
+fi
 if [ -n "$EXPECTED_SHA" ]; then
   [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ] || fail "checksum mismatch for $PKG (expected $EXPECTED_SHA, got $ACTUAL_SHA)"
   log "SHA-256 verified: $ACTUAL_SHA"
@@ -141,11 +145,12 @@ while kill -0 "$EXTRACT_PID" 2>/dev/null; do
   fi
   sleep 1
 done
-wait "$EXTRACT_PID"; EXTRACT_RC=$?
+EXTRACT_RC=0
+wait "$EXTRACT_PID" || EXTRACT_RC=$?
 echo
 if [ "$EXTRACT_RC" -ne 0 ] || [ ! -d "$EXTRACT" ]; then fail "pkgutil --expand-full failed"; fi
 
-SERVER_BIN="$(find "$EXTRACT" -type f -path '*/runtime/supersqe-server' | head -n 1)"
+SERVER_BIN="$(find "$EXTRACT" -type f -path '*/runtime/supersqe-server' | sed -n '1p')"
 [ -n "$SERVER_BIN" ] || fail "payload not found inside the package (unexpected layout)"
 PAYLOAD_DIR="$(dirname "$(dirname "$SERVER_BIN")")"
 
