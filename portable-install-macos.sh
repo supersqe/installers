@@ -224,4 +224,54 @@ echo "  Logs      : $DATA_DIR/logs/server.log"
 echo "  Stop      : $0 stop"
 echo "  Restart   : $0"
 echo
+
+# ---- One-click agent install URL handler (supersqe-runner://) --------------
+RUNNER_APP="$HOME/Applications/SuperSQE Runner.app"
+RUNNER_INSTALLER="$INSTALL_DIR/service/install-runner.sh"
+if [ -f "$RUNNER_INSTALLER" ]; then
+  mkdir -p "$RUNNER_APP/Contents/MacOS" "$RUNNER_APP/Contents/Resources"
+  cp "$RUNNER_INSTALLER" "$RUNNER_APP/Contents/Resources/install-runner.sh"
+  chmod +x "$RUNNER_APP/Contents/Resources/install-runner.sh"
+  cat > "$RUNNER_APP/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>SuperSQE Runner</string>
+  <key>CFBundleDisplayName</key><string>SuperSQE Runner</string>
+  <key>CFBundleIdentifier</key><string>com.supersqe.runner.launcher.portable</string>
+  <key>CFBundleVersion</key><string>1.0.0</string>
+  <key>CFBundleShortVersionString</key><string>1.0.0</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleExecutable</key><string>runner-install</string>
+  <key>LSUIElement</key><true/>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>SuperSQE Runner Installer</string>
+      <key>CFBundleURLSchemes</key><array><string>supersqe-runner</string></array>
+    </dict>
+  </array>
+</dict>
+</plist>
+PLIST
+  cat > "$RUNNER_APP/Contents/MacOS/runner-install" <<'LAUNCHER'
+#!/bin/bash
+HERE="$(cd "$(dirname "$0")/../Resources" && pwd)"
+URL="${1:-}"
+[ -z "$URL" ] && exit 0
+TMP="/tmp/supersqe-runner-install-$$.command"
+{
+  echo '#!/bin/bash'
+  printf 'exec "%s/install-runner.sh" %q\n' "$HERE" "$URL"
+} > "$TMP"
+chmod +x "$TMP"
+open -a Terminal "$TMP"
+LAUNCHER
+  chmod +x "$RUNNER_APP/Contents/MacOS/runner-install"
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$RUNNER_APP" >/dev/null 2>&1 || true
+  echo "  Agents    : Install button opens Terminal automatically"
+  echo
+fi
+
 open "http://127.0.0.1:$PORT" 2>/dev/null || true
