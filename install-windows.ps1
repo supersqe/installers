@@ -77,21 +77,41 @@ if ($AdminEmail -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { FailMsg "Invalid admin
 # ---- Download ------------------------------------------------------------
 $fileName = "supersqe-setup-$Version-x64.exe"
 $url = "https://github.com/supersqe/installers/releases/download/v$Version/$fileName"
-$installerPath = Join-Path $env:TEMP $fileName
+
+# A previous silent install may still be running and locking the exe in %TEMP%.
+$prior = Get-Process -Name 'supersqe-setup*' -ErrorAction SilentlyContinue
+if ($prior) {
+  WarnMsg "A previous SuperSQE installer is still running (PID $($prior.Id -join ',')) - waiting for it to finish..."
+  while ($prior -and -not $prior.HasExited) {
+    Start-Sleep -Seconds 2
+    $prior.Refresh()
+  }
+  OkMsg 'Previous installer finished.'
+}
+
+$downloadDir = Join-Path $env:LOCALAPPDATA 'SuperSQE\downloads'
+New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
+$installerPath = Join-Path $downloadDir $fileName
+if (Test-Path $installerPath) { Remove-Item $installerPath -Force -ErrorAction SilentlyContinue }
+if (Test-Path $installerPath) {
+  # Still locked (e.g. by a virus scanner) - use a unique name for this run.
+  $installerPath = Join-Path $downloadDir ("supersqe-setup-$Version-x64-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".exe")
+}
 
 Step "Downloading SuperSQE v$Version"
 Write-Host "    $url"
+Write-Host "    -> $installerPath"
 try {
   $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
   if ($curl) {
-    & $curl.Source -fL --progress-bar -o $installerPath $url
+    & $curl.Source -fL --progress-bar --retry 3 --retry-delay 2 -o $installerPath $url
     if ($LASTEXITCODE -ne 0) { throw "curl exited with $LASTEXITCODE" }
   } else {
     $ProgressPreference = 'Continue'
     Invoke-WebRequest -Uri $url -OutFile $installerPath -UseBasicParsing
   }
 } catch {
-  FailMsg "Download failed: $($_.Exception.Message)`nCheck that v$Version exists at github.com/supersqe/installers/releases"
+  FailMsg "Download failed: $($_.Exception.Message)`nCheck that v$Version exists at github.com/supersqe/installers/releases`nIf a previous installer is still running, close it (Task Manager) and run again."
 }
 OkMsg $installerPath
 
