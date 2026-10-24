@@ -28,6 +28,19 @@ log() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m    %s\033[0m\n' "$*"; }
 fail() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# draw_bar <percent> <label>
+draw_bar() {
+  local pct="$1" label="$2" width=28 filled empty bar i
+  filled=$(( pct * width / 100 ))
+  empty=$(( width - filled ))
+  bar=""
+  i=0
+  while [ "$i" -lt "$filled" ]; do bar="$bar#"; i=$((i + 1)); done
+  i=0
+  while [ "$i" -lt "$empty" ]; do bar="$bar-"; i=$((i + 1)); done
+  printf '\r  [%s] %3d%%  %s\033[K' "$bar" "$pct" "$label"
+}
+
 # ---- stop -----------------------------------------------------------------
 if [ "${1:-}" = "stop" ]; then
   log "Stopping SuperSQE server..."
@@ -92,7 +105,18 @@ log "Expanding $PKG ..."
 WORK="$(mktemp -d)"
 EXTRACT="$WORK/expand"   # pkgutil requires a destination that does not exist yet
 trap 'rm -rf "$WORK"' EXIT
-pkgutil --expand-full "$PKG" "$EXTRACT" || fail "pkgutil --expand-full failed"
+pkgutil --expand-full "$PKG" "$EXTRACT" >/dev/null 2>&1 &
+EXTRACT_PID=$!
+EXTRACT_START=$(date +%s)
+while kill -0 "$EXTRACT_PID" 2>/dev/null; do
+  ELAPSED=$(( $(date +%s) - EXTRACT_START ))
+  PCT=$(( 5 + ELAPSED / 3 )); [ "$PCT" -gt 90 ] && PCT=90
+  draw_bar "$PCT" "Extracting package - ${ELAPSED}s"
+  sleep 1
+done
+wait "$EXTRACT_PID"; EXTRACT_RC=$?
+echo
+if [ "$EXTRACT_RC" -ne 0 ] || [ ! -d "$EXTRACT" ]; then fail "pkgutil --expand-full failed"; fi
 
 SERVER_BIN="$(find "$EXTRACT" -type f -path '*/runtime/supersqe-server' | head -n 1)"
 [ -n "$SERVER_BIN" ] || fail "payload not found inside the package (unexpected layout)"
@@ -148,10 +172,15 @@ echo $! > "$DATA_DIR/server.pid"
 # ---- 6. Wait for health ---------------------------------------------------
 log "Waiting for http://127.0.0.1:$PORT/api/health ..."
 UP=""
-for _ in $(seq 1 150); do
+BOOT_START=$(date +%s)
+for _ in {1..150}; do
   if curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then UP=1; break; fi
+  ELAPSED=$(( $(date +%s) - BOOT_START ))
+  PCT=$(( 10 + ELAPSED / 2 )); [ "$PCT" -gt 95 ] && PCT=95
+  draw_bar "$PCT" "Starting server (database + schema) - ${ELAPSED}s"
   sleep 2
 done
+echo
 if [ -z "$UP" ]; then
   echo "--- last 40 log lines ---"; tail -n 40 "$DATA_DIR/logs/server.log" || true
   fail "server did not become healthy - see $DATA_DIR/logs/server.log"

@@ -82,7 +82,14 @@ $installerPath = Join-Path $env:TEMP $fileName
 Step "Downloading SuperSQE v$Version"
 Write-Host "    $url"
 try {
-  Invoke-WebRequest -Uri $url -OutFile $installerPath -UseBasicParsing
+  $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+  if ($curl) {
+    & $curl.Source -fL --progress-bar -o $installerPath $url
+    if ($LASTEXITCODE -ne 0) { throw "curl exited with $LASTEXITCODE" }
+  } else {
+    $ProgressPreference = 'Continue'
+    Invoke-WebRequest -Uri $url -OutFile $installerPath -UseBasicParsing
+  }
 } catch {
   FailMsg "Download failed: $($_.Exception.Message)`nCheck that v$Version exists at github.com/supersqe/installers/releases"
 }
@@ -97,29 +104,81 @@ if ($sig.Status -ne 'Valid') {
 OkMsg "Valid signature - publisher: $($sig.SignerCertificate.Subject)"
 if ($sig.TimeStamperCertificate) { OkMsg "Timestamped by: $($sig.TimeStamperCertificate.Subject)" }
 
-# ---- Install -------------------------------------------------------------
+# ---- Install (with live progress) ----------------------------------------
 Step "Installing - port $Port, administrator $AdminEmail"
-$installArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/Port=$Port", "/AdminEmail=$AdminEmail")
-$proc = Start-Process -FilePath $installerPath -ArgumentList $installArgs -Wait -PassThru
-if ($proc.ExitCode -ne 0) { FailMsg "The installer exited with code $($proc.ExitCode). Check the installer log in %TEMP%." }
+$installerLog = Join-Path $env:TEMP "supersqe-installer-$Version.log"
+$installArgs = @(
+  '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
+  "/LOG=$installerLog", "/Port=$Port", "/AdminEmail=$AdminEmail"
+)
+$dataDir = Join-Path $env:ProgramFiles 'SuperSQE\data'
+$svcLog = Join-Path $dataDir 'service-install.log'
+
+$proc = Start-Process -FilePath $installerPath -ArgumentList $installArgs -PassThru
+$started = Get-Date
+$lastStatus = ''
+$lastBeat = 0
+while (-not $proc.HasExited) {
+  $elapsed = [int]((Get-Date) - $started).TotalSeconds
+  $pct = [Math]::Min(30, 5 + [int]($elapsed / 2))
+  $phase = 'Installing files'
+
+  if (Test-Path $svcLog) {
+    $line = Get-Content $svcLog -Tail 1 -ErrorAction SilentlyContinue
+    if ($line) {
+      $lastStatus = $line.Trim()
+      switch -Regex ($lastStatus.ToLower()) {
+        'complete'                        { $pct = 88; $phase = 'Finishing services' }
+        'starting (the )?service|healthy' { $pct = 82; $phase = 'Starting services' }
+        'schema|db push|migrat'           { $pct = 72; $phase = 'Applying database schema' }
+        'postgres|database|initdb'        { $pct = 55; $phase = 'Initialising database' }
+        'config|password|admin'           { $pct = 35; $phase = 'Writing configuration' }
+        default                           { $pct = 45; $phase = 'Configuring' }
+      }
+    }
+  }
+
+  Write-Progress -Activity 'SuperSQE installation' -Status "$phase - ${elapsed}s" `
+    -PercentComplete $pct -CurrentOperation $lastStatus
+  if ($elapsed - $lastBeat -ge 30) {
+    $lastBeat = $elapsed
+    WarnMsg "still installing... ${elapsed}s ($phase)"
+  }
+  Start-Sleep -Milliseconds 700
+}
+$proc.WaitForExit()
+Write-Progress -Activity 'SuperSQE installation' -Completed
+if ($proc.ExitCode -ne 0) {
+  FailMsg "The installer exited with code $($proc.ExitCode). See $installerLog and $svcLog"
+}
 OkMsg 'Installer finished.'
 
-# ---- Wait for first boot + Welcome Pack ----------------------------------
-$dataDir = Join-Path $env:ProgramFiles 'SuperSQE\data'
+# ---- Wait for first boot + Welcome Pack (progress 90-100%) ----------------
 $welcome = Join-Path $dataDir 'welcome.txt'
 $creds = Join-Path $dataDir 'admin-credentials.txt'
 $healthUrl = "http://127.0.0.1:$Port/api/health"
 
 Step 'Waiting for the first boot (database + schema) - this can take a few minutes'
+$bootStart = Get-Date
 $ready = $false
+$lastBootBeat = 0
 for ($i = 0; $i -lt 150; $i++) {
+  $elapsed = [int]((Get-Date) - $bootStart).TotalSeconds
+  $pct = [Math]::Min(99, 90 + [int]($elapsed / 5))
+  Write-Progress -Activity 'SuperSQE first boot' -Status "starting the server - ${elapsed}s" -PercentComplete $pct
+
   if (Test-Path $welcome) { $ready = $true; break }
   try {
     $resp = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
     if ($resp.StatusCode -eq 200) { $ready = $true; break }
   } catch { }
+  if ($elapsed - $lastBootBeat -ge 30) {
+    $lastBootBeat = $elapsed
+    WarnMsg "still starting... ${elapsed}s"
+  }
   Start-Sleep -Seconds 2
 }
+Write-Progress -Activity 'SuperSQE first boot' -Completed
 if (-not $ready) { WarnMsg 'The server is still starting. It will be ready in a few minutes.' }
 
 # ---- Welcome Pack --------------------------------------------------------

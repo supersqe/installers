@@ -26,6 +26,19 @@ log() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m    %s\033[0m\n' "$*"; }
 fail() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# draw_bar <percent> <label>
+draw_bar() {
+  local pct="$1" label="$2" width=28 filled empty bar i
+  filled=$(( pct * width / 100 ))
+  empty=$(( width - filled ))
+  bar=""
+  i=0
+  while [ "$i" -lt "$filled" ]; do bar="$bar#"; i=$((i + 1)); done
+  i=0
+  while [ "$i" -lt "$empty" ]; do bar="$bar-"; i=$((i + 1)); done
+  printf '\r  [%s] %3d%%  %s\033[K' "$bar" "$pct" "$label"
+}
+
 [ "$(uname -s)" = "Darwin" ] || fail "This script is for macOS."
 
 # ---- Administrator access -------------------------------------------------
@@ -81,9 +94,36 @@ defaults write com.supersqe.server adminEmail "$ADMIN_EMAIL" 2>/dev/null || true
 sudo defaults write com.supersqe.server port -int "$PORT" 2>/dev/null || true
 sudo defaults write com.supersqe.server adminEmail "$ADMIN_EMAIL" 2>/dev/null || true
 
-# ---- Install --------------------------------------------------------------
+# ---- Install (with live progress) -----------------------------------------
 log 'Installing (accept the EULA if prompted)...'
-sudo installer -pkg "$OUT" -target / -allowUntrusted || fail 'The package installer failed.'
+INSTALL_LOG="$(mktemp -t supersqe-install)"
+sudo installer -pkg "$OUT" -target / -allowUntrusted -verboseR >"$INSTALL_LOG" 2>&1 &
+INSTALL_PID=$!
+INSTALL_START=$(date +%s)
+LAST_PHASE=""
+while kill -0 "$INSTALL_PID" 2>/dev/null; do
+  ELAPSED=$(( $(date +%s) - INSTALL_START ))
+  PHASE="$(grep -E 'PHASE:' "$INSTALL_LOG" 2>/dev/null | tail -n 1 | sed 's/.*PHASE: *//' || true)"
+  case "$PHASE" in
+    *Preparing*)  PCT=10 ;;
+    *Waiting*)    PCT=15 ;;
+    *Configuring*) PCT=25 ;;
+    *Writing*)    PCT=45 ;;
+    *scripts*)    PCT=75 ;;
+    *Finished*)   PCT=90 ;;
+    *)            PCT=$(( 5 + ELAPSED / 4 )); [ "$PCT" -gt 85 ] && PCT=85 ;;
+  esac
+  draw_bar "$PCT" "Installing package - ${ELAPSED}s ${PHASE}"
+  LAST_PHASE="$PHASE"
+  sleep 1
+done
+wait "$INSTALL_PID"; INSTALL_RC=$?
+echo
+if [ "$INSTALL_RC" -ne 0 ]; then
+  echo "--- installer output ---"; cat "$INSTALL_LOG"
+  fail 'The package installer failed.'
+fi
+rm -f "$INSTALL_LOG"
 
 # ---- Ensure the administrator account exists ------------------------------
 # Packages released before the admin-password generation only record the email.
@@ -97,16 +137,21 @@ if ! sudo grep -q '^SUPERSQE_ADMIN_PASSWORD=' "$CFG" 2>/dev/null; then
   sudo launchctl kickstart -k system/com.supersqe.server 2>/dev/null || true
 fi
 
-# ---- Wait for first boot + Welcome Pack ----------------------------------
+# ---- Wait for first boot + Welcome Pack (progress 90-100%) ----------------
 log 'Waiting for the first boot (database + schema) - this can take a few minutes'
+BOOT_START=$(date +%s)
 READY=""
-for _ in $(seq 1 150); do
+for _ in {1..150}; do
+  ELAPSED=$(( $(date +%s) - BOOT_START ))
+  PCT=$(( 90 + ELAPSED / 6 )); [ "$PCT" -gt 99 ] && PCT=99
   if sudo test -f "$DATA_DIR/welcome.txt" 2>/dev/null && sudo grep -q 'Password' "$DATA_DIR/welcome.txt" 2>/dev/null; then
     READY=1; break
   fi
   if curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then READY=1; fi
+  draw_bar "$PCT" "Starting server - ${ELAPSED}s"
   sleep 2
 done
+echo
 [ -n "$READY" ] || warn 'The server is still starting - it will be ready in a few minutes.'
 
 echo
