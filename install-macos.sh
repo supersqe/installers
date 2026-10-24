@@ -18,7 +18,7 @@ set -euo pipefail
 # Resolve the latest published release when no version was supplied.
 if [ -z "${SUPERSQE_VERSION:-}" ]; then
   LATEST="$(curl -fsSL --max-time 15 https://api.github.com/repos/supersqe/installers/releases/latest 2>/dev/null | grep -m1 '"tag_name"' | sed -E 's/.*"v?([0-9.]+)".*/\1/' || true)"
-  VERSION="${LATEST:-1.0.6}"
+  VERSION="${LATEST:-1.0.8}"
 else
   VERSION="$SUPERSQE_VERSION"
 fi

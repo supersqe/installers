@@ -20,7 +20,7 @@ DATA_DIR="$HOME/supersqe-data"
 # Resolve the latest published release when no version was supplied.
 if [ -z "${SUPERSQE_VERSION:-}" ]; then
   LATEST="$(curl -fsSL --max-time 15 https://api.github.com/repos/supersqe/installers/releases/latest 2>/dev/null | grep -m1 '"tag_name"' | sed -E 's/.*"v?([0-9.]+)".*/\1/' || true)"
-  VERSION="${LATEST:-1.0.6}"
+  VERSION="${LATEST:-1.0.8}"
 else
   VERSION="$SUPERSQE_VERSION"
 fi
@@ -97,6 +97,10 @@ fi
 
 # ---- 1. Get the .pkg (local path or download the latest release) ----------
 PKG="${1:-}"
+if [ -n "$PKG" ]; then
+  PKG_VERSION="$(basename "$PKG" | sed -n 's/.*-v\([0-9][0-9.]*\)\.pkg$/\1/p')"
+  [ -n "$PKG_VERSION" ] && VERSION="$PKG_VERSION"
+fi
 if [ -z "$PKG" ]; then
   ARCH="$(uname -m)"; [ "$ARCH" = "arm64" ] || ARCH=x64
   PKG="$HOME/Downloads/supersqe-macos-$ARCH-v$VERSION.pkg"
