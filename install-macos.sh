@@ -115,6 +115,17 @@ if ! id -Gn 2>/dev/null | tr ' ' '\n' | grep -qx admin; then
   run_portable_install
 fi
 
+# Refuse to queue behind another installation (App Store, another pkg, or a
+# stale 'installer' left by an interrupted run). This is what makes the CLI
+# appear stuck at ~16% ("Waiting for other installations to complete").
+if pgrep -f '/usr/sbin/installer' >/dev/null 2>&1 || pgrep -x Installer >/dev/null 2>&1; then
+  warn 'Another macOS installation is already running:'
+  pgrep -fl '/usr/sbin/installer' 2>/dev/null || true
+  pgrep -x Installer 2>/dev/null | while read -r pid; do ps -p "$pid" -o pid=,comm= 2>/dev/null; done
+  warn "If it is a stale run, stop it with: sudo pkill -f '/usr/sbin/installer'"
+  fail 'Finish or cancel that installation, then run this command again.'
+fi
+
 # ---- Download -------------------------------------------------------------
 ARCH="$(uname -m)"; [ "$ARCH" = "arm64" ] || ARCH=x64
 PKG="supersqe-macos-$ARCH-v$VERSION.pkg"
@@ -130,6 +141,25 @@ xattr -dr com.apple.quarantine "$OUT" 2>/dev/null || true
 log 'SHA-256 of the downloaded package:'
 warn "$(shasum -a 256 "$OUT" | awk '{print $1}')"
 warn 'Compare it with the checksum on https://www.supersqe.com/downloads'
+
+# ---- Prepare the payload package -----------------------------------------
+# The product licence in the Distribution is displayed by the GUI Installer;
+# the CLI can wait on it indefinitely. Installing the component package
+# directly avoids that while still running the package's postinstall scripts.
+INSTALL_PKG="$OUT"
+EXPAND_DIR="$(mktemp -d /tmp/supersqe-pkg.XXXXXX 2>/dev/null || true)"
+if [ -n "$EXPAND_DIR" ] && pkgutil --expand "$OUT" "$EXPAND_DIR" >/dev/null 2>&1; then
+  CANDIDATE="$(find "$EXPAND_DIR" -name '*.pkg' 2>/dev/null | head -n 1)"
+  if [ -n "$CANDIDATE" ] && [ -d "$CANDIDATE" ]; then
+    if pkgutil --flatten "$CANDIDATE" "$EXPAND_DIR/payload.pkg" >/dev/null 2>&1; then
+      CANDIDATE="$EXPAND_DIR/payload.pkg"
+    fi
+  fi
+  if [ -n "$CANDIDATE" ] && [ -e "$CANDIDATE" ]; then
+    INSTALL_PKG="$CANDIDATE"
+  fi
+fi
+log 'By continuing you accept the SuperSQE EULA (https://www.supersqe.com/eula).'
 
 # ---- Administrator authentication (right before the system install) ------
 if ! sudo -v; then
@@ -148,12 +178,22 @@ if [ -n "$ADMIN_EMAIL" ]; then
 fi
 
 # ---- Install (with live progress) -----------------------------------------
-log 'Installing (accept the EULA if prompted)...'
+log 'Installing the package...'
 INSTALL_LOG="$(mktemp -t supersqe-install)"
-sudo -n installer -pkg "$OUT" -target / -allowUntrusted -verboseR >"$INSTALL_LOG" 2>&1 &
+INSTALL_PID=""
+cleanup_install() {
+  if [ -n "$INSTALL_PID" ] && kill -0 "$INSTALL_PID" 2>/dev/null; then
+    warn 'Stopping the package installer...'
+    kill "$INSTALL_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup_install INT TERM
+sudo -n installer -pkg "$INSTALL_PKG" -target / -allowUntrusted -verboseR >"$INSTALL_LOG" 2>&1 &
 INSTALL_PID=$!
 INSTALL_START=$(date +%s)
 LAST_PHASE=""
+LAST_CHANGE_AT=0
+STALL_REPORTED=0
 TICK_AT=0
 TICKS=(
   "Copying application files and the bundled browser runtime..."
@@ -175,6 +215,20 @@ while kill -0 "$INSTALL_PID" 2>/dev/null; do
     *)            PCT=$(( 5 + ELAPSED / 4 )); [ "$PCT" -gt 85 ] && PCT=85 ;;
   esac
   draw_bar "$PCT" "Installing package - ${ELAPSED}s ${PHASE}"
+  if [ "$PHASE" != "$LAST_PHASE" ]; then
+    LAST_CHANGE_AT=$ELAPSED
+    STALL_REPORTED=0
+  fi
+  if [ "$STALL_REPORTED" = "0" ] && [ $((ELAPSED - LAST_CHANGE_AT)) -ge 120 ]; then
+    echo
+    warn 'The installer has not progressed for 2 minutes. Last log lines:'
+    tail -n 5 "$INSTALL_LOG" 2>/dev/null | sed 's/^/    /'
+    warn 'If another installation is in progress, finish or cancel it (Installer/App Store).'
+    warn 'Or press Ctrl+C and use the per-user install (no admin password):'
+    warn "  curl -fsSL -o ~/portable-install-macos.sh $PORTABLE_URL"
+    warn '  bash ~/portable-install-macos.sh'
+    STALL_REPORTED=1
+  fi
   if [ $((ELAPSED - TICK_AT)) -ge 60 ]; then
     TICK_AT=$ELAPSED
     IDX=$(( ELAPSED / 60 - 1 )); [ "$IDX" -lt 0 ] && IDX=0; [ "$IDX" -ge ${#TICKS[@]} ] && IDX=$(( ${#TICKS[@]} - 1 ))
@@ -190,6 +244,7 @@ if [ "$INSTALL_RC" -ne 0 ]; then
   fail 'The package installer failed.'
 fi
 rm -f "$INSTALL_LOG"
+[ -n "$EXPAND_DIR" ] && rm -rf "$EXPAND_DIR"
 
 # ---- Ensure the administrator account exists ------------------------------
 # Packages released before the admin-password generation only record the email.
