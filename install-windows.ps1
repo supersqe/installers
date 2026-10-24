@@ -22,12 +22,21 @@
 param(
   [int]$Port = 0,
   [string]$AdminEmail = '',
-  [string]$Version = '1.0.5',
+  [string]$Version = '',
   [switch]$Force,
   [switch]$AddDefenderExclusion
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Resolve the latest published release when no version was supplied.
+if ([string]::IsNullOrWhiteSpace($Version)) {
+  try {
+    $latest = Invoke-RestMethod -Uri 'https://api.github.com/repos/supersqe/installers/releases/latest' -UseBasicParsing -TimeoutSec 15
+    if ($latest.tag_name) { $Version = ([string]$latest.tag_name).TrimStart('v') }
+  } catch { }
+}
+if ([string]::IsNullOrWhiteSpace($Version)) { $Version = '1.0.6' }
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function OkMsg($msg) { Write-Host "    $msg" -ForegroundColor Green }

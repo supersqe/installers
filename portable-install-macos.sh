@@ -17,7 +17,13 @@ set -euo pipefail
 
 INSTALL_DIR="$HOME/supersqe"
 DATA_DIR="$HOME/supersqe-data"
-VERSION="${SUPERSQE_VERSION:-1.0.5}"
+# Resolve the latest published release when no version was supplied.
+if [ -z "${SUPERSQE_VERSION:-}" ]; then
+  LATEST="$(curl -fsSL --max-time 15 https://api.github.com/repos/supersqe/installers/releases/latest 2>/dev/null | grep -m1 '"tag_name"' | sed -E 's/.*"v?([0-9.]+)".*/\1/' || true)"
+  VERSION="${LATEST:-1.0.6}"
+else
+  VERSION="$SUPERSQE_VERSION"
+fi
 REPO="https://github.com/supersqe/installers/releases/download"
 PORT="${SUPERSQE_PORT:-}"
 ADMIN_EMAIL="${SUPERSQE_ADMIN_EMAIL:-}"
