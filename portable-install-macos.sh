@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# SuperSQE — portable (user-space) install for macOS. NO ADMIN / NO SUDO.
+# SuperSQE - portable (user-space) install for macOS. NO ADMIN / NO SUDO.
 #
 # Installs everything under your home folder and runs the platform as your
 # user. Nothing is written to /opt, /var or /Library, and no background
@@ -19,13 +19,16 @@ INSTALL_DIR="$HOME/supersqe"
 DATA_DIR="$HOME/supersqe-data"
 VERSION="${SUPERSQE_VERSION:-1.0.5}"
 REPO="https://github.com/supersqe/installers/releases/download"
-PORT="${SUPERSQE_PORT:-3000}"
+PORT="${SUPERSQE_PORT:-}"
+ADMIN_EMAIL="${SUPERSQE_ADMIN_EMAIL:-}"
 PG_PORT="${SUPERSQE_PG_PORT:-5433}"
+CFG="$DATA_DIR/config.env"
 
 log() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m    %s\033[0m\n' "$*"; }
 fail() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
-# ── stop ────────────────────────────────────────────────────────────────────
+# ---- stop -----------------------------------------------------------------
 if [ "${1:-}" = "stop" ]; then
   log "Stopping SuperSQE server..."
   [ -f "$DATA_DIR/server.pid" ] && kill "$(cat "$DATA_DIR/server.pid")" 2>/dev/null || true
@@ -40,7 +43,37 @@ fi
 
 [ "$(uname -s)" = "Darwin" ] || fail "This script is for macOS."
 
-# ── 1. Get the .pkg (local path or download the latest release) ─────────────
+# ---- First-run configuration (port + administrator email) -----------------
+NEW_CONFIG=0
+if [ ! -f "$CFG" ]; then
+  NEW_CONFIG=1
+  if [ -z "$PORT" ]; then
+    read -r -p "Web port [3000]: " PORT
+    PORT="${PORT:-3000}"
+  fi
+  case "$PORT" in ''|*[!0-9]*) fail "Invalid port: $PORT" ;; esac
+  if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then fail "Invalid port: $PORT (1-65535)"; fi
+  if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    warn "Port $PORT is already in use."
+    read -r -p 'Continue anyway? (y/N) ' ans
+    case "$ans" in y|Y|yes) ;; *) fail 'Installation cancelled - choose a free port and run again.' ;; esac
+  fi
+  while true; do
+    if [ -z "$ADMIN_EMAIL" ]; then
+      read -r -p 'Administrator email (required - this is your SuperSQE login): ' ADMIN_EMAIL
+    fi
+    case "$ADMIN_EMAIL" in
+      *@*.*) break ;;
+      *) warn 'Enter a valid email address, for example name@company.com'; ADMIN_EMAIL="" ;;
+    esac
+  done
+else
+  PORT="${SUPERSQE_PORT:-$(grep -E '^PORT=' "$CFG" | cut -d= -f2- || echo 3000)}"
+  PORT="${PORT:-3000}"
+  log "Existing installation found - keeping $CFG (port $PORT)"
+fi
+
+# ---- 1. Get the .pkg (local path or download the latest release) ----------
 PKG="${1:-}"
 if [ -z "$PKG" ]; then
   ARCH="$(uname -m)"; [ "$ARCH" = "arm64" ] || ARCH=x64
@@ -48,13 +81,13 @@ if [ -z "$PKG" ]; then
   if [ ! -f "$PKG" ]; then
     log "Downloading supersqe-macos-$ARCH-v$VERSION.pkg ..."
     curl -fL --progress-bar -o "$PKG" "$REPO/v$VERSION/supersqe-macos-$ARCH-v$VERSION.pkg" \
-      || fail "download failed — check the version (v$VERSION) exists on github.com/supersqe/installers/releases"
+      || fail "download failed - check the version (v$VERSION) exists on github.com/supersqe/installers/releases"
   fi
 fi
 [ -f "$PKG" ] || fail "package not found: $PKG"
 xattr -dr com.apple.quarantine "$PKG" 2>/dev/null || true
 
-# ── 2. Expand the package (pkgutil needs no admin) ──────────────────────────
+# ---- 2. Expand the package (pkgutil needs no admin) -----------------------
 log "Expanding $PKG ..."
 WORK="$(mktemp -d)"
 EXTRACT="$WORK/expand"   # pkgutil requires a destination that does not exist yet
@@ -65,7 +98,7 @@ SERVER_BIN="$(find "$EXTRACT" -type f -path '*/runtime/supersqe-server' | head -
 [ -n "$SERVER_BIN" ] || fail "payload not found inside the package (unexpected layout)"
 PAYLOAD_DIR="$(dirname "$(dirname "$SERVER_BIN")")"
 
-# ── 3. Install into ~/supersqe ──────────────────────────────────────────────
+# ---- 3. Install into ~/supersqe -------------------------------------------
 log "Installing payload to $INSTALL_DIR ..."
 if [ -d "$INSTALL_DIR" ]; then
   [ -f "$DATA_DIR/server.pid" ] && kill "$(cat "$DATA_DIR/server.pid")" 2>/dev/null || true
@@ -75,12 +108,12 @@ mv "$PAYLOAD_DIR" "$INSTALL_DIR"
 chmod +x "$INSTALL_DIR/runtime/supersqe-server"
 chmod +x "$INSTALL_DIR/service/"*.sh 2>/dev/null || true
 
-# ── 4. Data dir + config.env (idempotent — keeps existing secrets) ──────────
+# ---- 4. Data dir + config.env (idempotent - keeps existing secrets) -------
 mkdir -p "$DATA_DIR/logs" "$DATA_DIR/uploads"
-CFG="$DATA_DIR/config.env"
-if [ ! -f "$CFG" ]; then
+if [ "$NEW_CONFIG" = "1" ]; then
   log "Writing $CFG ..."
   PG_PASS="$(openssl rand -hex 24)"
+  ADMIN_PASS="$(openssl rand -base64 18 | tr -d '\n')"
   cat > "$CFG" <<EOF
 HOST=127.0.0.1
 PORT=$PORT
@@ -95,13 +128,13 @@ DATABASE_URL=postgresql://supersqe:$PG_PASS@127.0.0.1:$PG_PORT/supersqe
 NEXTAUTH_SECRET=$(openssl rand -hex 32)
 INTERNAL_SECRET=$(openssl rand -hex 32)
 NEXTAUTH_URL=http://localhost:$PORT
+SUPERSQE_ADMIN_EMAIL=$ADMIN_EMAIL
+SUPERSQE_ADMIN_PASSWORD=$ADMIN_PASS
 EOF
   chmod 600 "$CFG"
-else
-  log "Keeping existing $CFG"
 fi
 
-# ── 5. Start the server (it bootstraps postgres + schema + admin itself) ────
+# ---- 5. Start the server (it bootstraps postgres + schema + admin itself) --
 log "Starting SuperSQE (first run initialises the bundled PostgreSQL)..."
 export SUPERSQE_INSTALL_DIR="$INSTALL_DIR"
 export SUPERSQE_DATA_DIR="$DATA_DIR"
@@ -112,22 +145,30 @@ nohup "$INSTALL_DIR/runtime/supersqe-server" -r tsconfig-paths/register dist/ser
   >> "$DATA_DIR/logs/server.log" 2>&1 &
 echo $! > "$DATA_DIR/server.pid"
 
-# ── 6. Wait for health ──────────────────────────────────────────────────────
+# ---- 6. Wait for health ---------------------------------------------------
 log "Waiting for http://127.0.0.1:$PORT/api/health ..."
 UP=""
-for _ in $(seq 1 90); do
+for _ in $(seq 1 150); do
   if curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then UP=1; break; fi
   sleep 2
 done
 if [ -z "$UP" ]; then
   echo "--- last 40 log lines ---"; tail -n 40 "$DATA_DIR/logs/server.log" || true
-  fail "server did not become healthy — see $DATA_DIR/logs/server.log"
+  fail "server did not become healthy - see $DATA_DIR/logs/server.log"
 fi
 
-log "SuperSQE is running."
+# ---- 7. Welcome Pack ------------------------------------------------------
+log "SuperSQE is running - http://127.0.0.1:$PORT"
 echo
-echo "  URL       : http://127.0.0.1:$PORT"
-echo "  Admin     : cat $DATA_DIR/welcome.txt   (system admin credentials)"
+if [ -f "$DATA_DIR/welcome.txt" ]; then
+  echo '---------------------------- Welcome Pack ----------------------------'
+  cat "$DATA_DIR/welcome.txt"
+  echo '----------------------------------------------------------------------'
+else
+  echo "  Welcome Pack: $DATA_DIR/welcome.txt (written shortly after first boot)"
+fi
+echo
+echo "  Admin     : $DATA_DIR/welcome.txt   (system admin credentials)"
 echo "  Logs      : $DATA_DIR/logs/server.log"
 echo "  Stop      : $0 stop"
 echo "  Restart   : $0"
