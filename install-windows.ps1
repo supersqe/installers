@@ -23,7 +23,8 @@ param(
   [int]$Port = 0,
   [string]$AdminEmail = '',
   [string]$Version = '1.0.5',
-  [switch]$Force
+  [switch]$Force,
+  [switch]$AddDefenderExclusion
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,11 +46,49 @@ if (-not $isAdmin) {
   exit
 }
 
+# ---- Existing installation? (upgrades keep the port + admin account) ------
+$dataDir = Join-Path $env:ProgramFiles 'SuperSQE\data'
+$existingCfg = Join-Path $dataDir 'config.env'
+$isUpgrade = Test-Path $existingCfg
+$existingPort = 0
+if ($isUpgrade) {
+  try {
+    $portLine = Select-String -Path $existingCfg -Pattern '^PORT=(\d+)' -ErrorAction Stop | Select-Object -First 1
+    if ($portLine) { $existingPort = [int]$portLine.Matches[0].Groups[1].Value }
+  } catch { }
+  if ($existingPort -gt 0) { $Port = $existingPort }
+  Step "Existing SuperSQE installation detected"
+  Write-Host "    Upgrades keep your current configuration: port $existingPort and the existing administrator account."
+  Write-Host "    (To change the port later: edit $existingCfg and restart 'SuperSQE Server'.)"
+}
+
+# ---- Optional: Defender exclusion (much faster installs) -----------------
+try {
+  $defender = Get-MpComputerStatus -ErrorAction Stop
+  $installRoot = Join-Path $env:ProgramFiles 'SuperSQE'
+  $excluded = $false
+  try { $excluded = @((Get-MpPreference -ErrorAction Stop).ExclusionPath) -contains $installRoot } catch { }
+  if ($defender.RealTimeProtectionEnabled -and -not $excluded) {
+    $addExclusion = $AddDefenderExclusion.IsPresent
+    if (-not $addExclusion) {
+      $ans = Read-Host "Add a Microsoft Defender exclusion for '$installRoot' to speed up the install? (Y/n)"
+      $addExclusion = ($ans -notmatch '^(n|no)$')
+    }
+    if ($addExclusion) {
+      Add-MpPreference -ExclusionPath $installRoot -ErrorAction Stop
+      OkMsg "Defender exclusion added for $installRoot"
+    }
+  }
+} catch {
+  # Defender may be disabled or managed by policy - not fatal.
+}
+
 # ---- Port ----------------------------------------------------------------
-if ($Port -eq 0) {
+if (-not $isUpgrade -and $Port -eq 0) {
   $entered = Read-Host 'Web port [3000]'
   if ([string]::IsNullOrWhiteSpace($entered)) { $Port = 3000 } else { $Port = [int]$entered }
 }
+if ($Port -eq 0) { $Port = 3000 }
 if ($Port -lt 1 -or $Port -gt 65535) { FailMsg "Invalid port '$Port' - use a number between 1 and 65535." }
 
 $portInUse = $false
@@ -57,22 +96,26 @@ try {
   $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
   if ($listener) { $portInUse = $true }
 } catch { }
-if ($portInUse -and -not $Force) {
+if ($portInUse -and -not $isUpgrade -and -not $Force) {
   WarnMsg "Port $Port is already in use by another program."
   $answer = Read-Host 'Continue anyway? (y/N)'
   if ($answer -notmatch '^(y|yes)$') { FailMsg 'Installation cancelled. Choose a free port and run again.' }
 }
 
-# ---- Administrator email (required) --------------------------------------
-if (-not $AdminEmail) {
-  while ($true) {
-    $AdminEmail = (Read-Host 'Administrator email (required - this is your SuperSQE login)').Trim()
-    if ($AdminEmail -match '^[^@\s]+@[^@\s]+\.[^@\s]+$') { break }
-    WarnMsg 'Enter a valid email address, for example name@company.com'
-    $AdminEmail = ''
+# ---- Administrator email (required on first install) --------------------
+if ($isUpgrade) {
+  if (-not $AdminEmail) { $AdminEmail = 'unchanged@supersqe.local' }
+} else {
+  if (-not $AdminEmail) {
+    while ($true) {
+      $AdminEmail = (Read-Host 'Administrator email (required - this is your SuperSQE login)').Trim()
+      if ($AdminEmail -match '^[^@\s]+@[^@\s]+\.[^@\s]+$') { break }
+      WarnMsg 'Enter a valid email address, for example name@company.com'
+      $AdminEmail = ''
+    }
   }
+  if ($AdminEmail -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { FailMsg "Invalid admin email '$AdminEmail'." }
 }
-if ($AdminEmail -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { FailMsg "Invalid admin email '$AdminEmail'." }
 
 # ---- Download ------------------------------------------------------------
 $fileName = "supersqe-setup-$Version-x64.exe"
@@ -125,13 +168,14 @@ OkMsg "Valid signature - publisher: $($sig.SignerCertificate.Subject)"
 if ($sig.TimeStamperCertificate) { OkMsg "Timestamped by: $($sig.TimeStamperCertificate.Subject)" }
 
 # ---- Install (with live progress) ----------------------------------------
-Step "Installing - port $Port, administrator $AdminEmail"
+if ($isUpgrade) { Step "Upgrading SuperSQE on port $Port (administrator account preserved)" }
+else { Step "Installing - port $Port, administrator $AdminEmail" }
 $installerLog = Join-Path $env:TEMP "supersqe-installer-$Version.log"
+# Quote path-like parameters so Inno parses them correctly (TEMP contains spaces).
 $installArgs = @(
   '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
-  "/LOG=$installerLog", "/Port=$Port", "/AdminEmail=$AdminEmail"
+  "/LOG=`"$installerLog`"", "/Port=$Port", "/AdminEmail=`"$AdminEmail`""
 )
-$dataDir = Join-Path $env:ProgramFiles 'SuperSQE\data'
 $svcLog = Join-Path $dataDir 'service-install.log'
 
 $proc = Start-Process -FilePath $installerPath -ArgumentList $installArgs -PassThru
@@ -202,16 +246,23 @@ Write-Progress -Activity 'SuperSQE first boot' -Completed
 if (-not $ready) { WarnMsg 'The server is still starting. It will be ready in a few minutes.' }
 
 # ---- Welcome Pack --------------------------------------------------------
-Step 'Installation complete'
-Write-Host ""
-Write-Host "  SuperSQE is installed and running." -ForegroundColor Green
-Write-Host "  URL:      http://localhost:$Port"
-Write-Host "  Data dir: $dataDir"
-Write-Host ""
-
 $welcomeText = $null
 if (Test-Path $welcome) { $welcomeText = Get-Content $welcome -Raw }
 elseif (Test-Path $creds) { $welcomeText = Get-Content $creds -Raw }
+
+# The actual port may differ from the requested one on upgrades.
+$actualPort = $Port
+if ($welcomeText) {
+  $m = [regex]::Match($welcomeText, 'http://localhost:(\d+)')
+  if ($m.Success) { $actualPort = [int]$m.Groups[1].Value }
+}
+
+Step 'Installation complete'
+Write-Host ""
+Write-Host "  SuperSQE is installed and running." -ForegroundColor Green
+Write-Host "  URL:      http://localhost:$actualPort"
+Write-Host "  Data dir: $dataDir"
+Write-Host ""
 
 if ($welcomeText) {
   Write-Host '---------------------------- Welcome Pack ----------------------------' -ForegroundColor Cyan
@@ -221,4 +272,16 @@ if ($welcomeText) {
   WarnMsg "Welcome Pack not written yet. Read it shortly at: $welcome"
 }
 
-Start-Process "http://localhost:$Port"
+# An upgrade keeps the existing administrator account and does not print the
+# password again. Point the user at the saved credentials file.
+if ($welcomeText -and ($welcomeText -notmatch 'Password')) {
+  WarnMsg 'This was an upgrade - your existing administrator account is unchanged.'
+  WarnMsg "Read the saved credentials (run as Administrator): Get-Content '$creds'"
+}
+
+Write-Host ""
+Write-Host "  Tip: change the port on an existing install by editing" -ForegroundColor DarkGray
+Write-Host "       $existingCfg and restarting the 'SuperSQE Server' service." -ForegroundColor DarkGray
+Write-Host ""
+
+Start-Process "http://localhost:$actualPort"

@@ -47,29 +47,42 @@ if ! sudo -n true 2>/dev/null; then
   sudo -v || fail 'Administrator access is required to install SuperSQE.'
 fi
 
+# ---- Existing installation? (upgrades keep the port + admin account) ------
+IS_UPGRADE=0
+if [ -f "$CFG" ]; then
+  IS_UPGRADE=1
+  CFG_PORT="$(sudo grep -E '^PORT=' "$CFG" 2>/dev/null | cut -d= -f2- || true)"
+  [ -n "$CFG_PORT" ] && PORT="${PORT:-$CFG_PORT}"
+  log "Existing SuperSQE installation detected - upgrades keep port ${PORT:-?} and the administrator account."
+  log "(To change the port later: edit $CFG and restart the service.)"
+fi
+
 # ---- Port -----------------------------------------------------------------
-if [ -z "$PORT" ]; then
+if [ "$IS_UPGRADE" = "0" ] && [ -z "$PORT" ]; then
   read -r -p "Web port [3000]: " PORT
   PORT="${PORT:-3000}"
 fi
+PORT="${PORT:-3000}"
 case "$PORT" in ''|*[!0-9]*) fail "Invalid port: $PORT" ;; esac
 if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then fail "Invalid port: $PORT (1-65535)"; fi
-if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+if [ "$IS_UPGRADE" = "0" ] && lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   warn "Port $PORT is already in use."
   read -r -p 'Continue anyway? (y/N) ' ans
   case "$ans" in y|Y|yes) ;; *) fail 'Installation cancelled - choose a free port and run again.' ;; esac
 fi
 
-# ---- Administrator email (required) --------------------------------------
-while true; do
-  if [ -z "$ADMIN_EMAIL" ]; then
-    read -r -p 'Administrator email (required - this is your SuperSQE login): ' ADMIN_EMAIL
-  fi
-  case "$ADMIN_EMAIL" in
-    *@*.*) break ;;
-    *) warn 'Enter a valid email address, for example name@company.com'; ADMIN_EMAIL="" ;;
-  esac
-done
+# ---- Administrator email (required on first install) --------------------
+if [ "$IS_UPGRADE" = "0" ]; then
+  while true; do
+    if [ -z "$ADMIN_EMAIL" ]; then
+      read -r -p 'Administrator email (required - this is your SuperSQE login): ' ADMIN_EMAIL
+    fi
+    case "$ADMIN_EMAIL" in
+      *@*.*) break ;;
+      *) warn 'Enter a valid email address, for example name@company.com'; ADMIN_EMAIL="" ;;
+    esac
+  done
+fi
 
 # ---- Download -------------------------------------------------------------
 ARCH="$(uname -m)"; [ "$ARCH" = "arm64" ] || ARCH=x64
@@ -88,11 +101,14 @@ warn "$(shasum -a 256 "$OUT" | awk '{print $1}')"
 warn 'Compare it with the checksum on https://www.supersqe.com/downloads'
 
 # ---- Configure the package (postinstall reads these) ----------------------
-log "Configuring port $PORT and administrator $ADMIN_EMAIL"
+log "Configuring port $PORT"
 defaults write com.supersqe.server port -int "$PORT" 2>/dev/null || true
-defaults write com.supersqe.server adminEmail "$ADMIN_EMAIL" 2>/dev/null || true
 sudo defaults write com.supersqe.server port -int "$PORT" 2>/dev/null || true
-sudo defaults write com.supersqe.server adminEmail "$ADMIN_EMAIL" 2>/dev/null || true
+if [ -n "$ADMIN_EMAIL" ]; then
+  log "Configuring administrator $ADMIN_EMAIL"
+  defaults write com.supersqe.server adminEmail "$ADMIN_EMAIL" 2>/dev/null || true
+  sudo defaults write com.supersqe.server adminEmail "$ADMIN_EMAIL" 2>/dev/null || true
+fi
 
 # ---- Install (with live progress) -----------------------------------------
 log 'Installing (accept the EULA if prompted)...'
@@ -129,7 +145,7 @@ rm -f "$INSTALL_LOG"
 # Packages released before the admin-password generation only record the email.
 # Bootstrap creates the admin + Welcome Pack on the next start when BOTH
 # SUPERSQE_ADMIN_EMAIL and SUPERSQE_ADMIN_PASSWORD are present.
-if ! sudo grep -q '^SUPERSQE_ADMIN_PASSWORD=' "$CFG" 2>/dev/null; then
+if [ "$IS_UPGRADE" = "0" ] && ! sudo grep -q '^SUPERSQE_ADMIN_PASSWORD=' "$CFG" 2>/dev/null; then
   log 'Preparing the administrator account...'
   PASS="$(openssl rand -base64 18 | tr -d '\n')"
   sudo sh -c "printf '\nSUPERSQE_ADMIN_PASSWORD=%s\n' '$PASS' >> '$CFG'"
@@ -155,16 +171,29 @@ echo
 [ -n "$READY" ] || warn 'The server is still starting - it will be ready in a few minutes.'
 
 echo
-log "Installation complete - http://127.0.0.1:$PORT"
+# The actual port may differ from the requested one on upgrades.
+ACTUAL_PORT="$PORT"
+if sudo test -f "$DATA_DIR/welcome.txt"; then
+  WELCOME_PORT="$(sudo grep -m1 'http://localhost:' "$DATA_DIR/welcome.txt" 2>/dev/null | grep -oE 'localhost:[0-9]+' | head -n1 | cut -d: -f2 || true)"
+  [ -n "$WELCOME_PORT" ] && ACTUAL_PORT="$WELCOME_PORT"
+fi
+
+log "Installation complete - http://127.0.0.1:$ACTUAL_PORT"
 echo
 if sudo test -f "$DATA_DIR/welcome.txt"; then
   echo '---------------------------- Welcome Pack ----------------------------'
   sudo cat "$DATA_DIR/welcome.txt"
   echo '----------------------------------------------------------------------'
+  if ! sudo grep -q 'Password' "$DATA_DIR/welcome.txt" 2>/dev/null; then
+    if [ "$IS_UPGRADE" = "1" ]; then
+      warn 'This was an upgrade - your existing administrator account is unchanged.'
+    fi
+    warn "Saved credentials: sudo cat $DATA_DIR/admin-credentials.txt"
+  fi
 elif sudo test -f "$DATA_DIR/admin-credentials.txt"; then
   sudo cat "$DATA_DIR/admin-credentials.txt"
 else
   warn "Welcome Pack not written yet - read it shortly at $DATA_DIR/welcome.txt"
 fi
 
-open "http://127.0.0.1:$PORT" 2>/dev/null || true
+open "http://127.0.0.1:$ACTUAL_PORT" 2>/dev/null || true
