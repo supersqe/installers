@@ -110,6 +110,7 @@ fi
 xattr -dr com.apple.quarantine "$PKG" 2>/dev/null || true
 
 # ---- 1b. Verify the package checksum (GitHub release digest) --------------
+log 'Verifying the package checksum...'
 ACTUAL_SHA="$(shasum -a 256 "$PKG" | awk '{print $1}')"
 EXPECTED_SHA="$(curl -fsSL --max-time 20 "https://api.github.com/repos/supersqe/installers/releases/tags/v$VERSION" 2>/dev/null \
   | tr '}' '\n' | grep -F "\"name\": \"$(basename "$PKG")\"" \
@@ -124,6 +125,7 @@ fi
 
 # ---- 2. Expand the package (pkgutil needs no admin) -----------------------
 log "Expanding $PKG ..."
+warn 'This can take a few minutes; progress is shown below.'
 WORK="$(mktemp -d)"
 EXTRACT="$WORK/expand"   # pkgutil requires a destination that does not exist yet
 trap 'rm -rf "$WORK"' EXIT
@@ -134,6 +136,9 @@ while kill -0 "$EXTRACT_PID" 2>/dev/null; do
   ELAPSED=$(( $(date +%s) - EXTRACT_START ))
   PCT=$(( 5 + ELAPSED / 3 )); [ "$PCT" -gt 90 ] && PCT=90
   draw_bar "$PCT" "Extracting package - ${ELAPSED}s"
+  if [ "$ELAPSED" -gt 0 ] && [ $((ELAPSED % 30)) -eq 0 ]; then
+    printf '\n    Still extracting the package payload (%dm %ds)\n' $((ELAPSED / 60)) $((ELAPSED % 60))
+  fi
   sleep 1
 done
 wait "$EXTRACT_PID"; EXTRACT_RC=$?

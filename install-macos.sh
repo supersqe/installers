@@ -138,6 +138,7 @@ if [ ! -f "$OUT" ]; then
 fi
 xattr -dr com.apple.quarantine "$OUT" 2>/dev/null || true
 
+log 'Verifying the package checksum...'
 ACTUAL_SHA="$(shasum -a 256 "$OUT" | awk '{print $1}')"
 EXPECTED_SHA="$(curl -fsSL --max-time 20 "https://api.github.com/repos/supersqe/installers/releases/tags/v$VERSION" 2>/dev/null \
   | tr '}' '\n' | grep -F "\"name\": \"$(basename "$OUT")\"" \
@@ -156,7 +157,24 @@ fi
 # directly avoids that while still running the package's postinstall scripts.
 INSTALL_PKG="$OUT"
 EXPAND_DIR="$(mktemp -d /tmp/supersqe-pkg.XXXXXX 2>/dev/null || true)"
-if [ -n "$EXPAND_DIR" ] && pkgutil --expand "$OUT" "$EXPAND_DIR" >/dev/null 2>&1; then
+if [ -n "$EXPAND_DIR" ]; then
+  log 'Preparing the package (this can take a few minutes)...'
+  pkgutil --expand "$OUT" "$EXPAND_DIR" >/dev/null 2>&1 &
+  EXPAND_PID=$!
+  EXPAND_START=$(date +%s)
+  while kill -0 "$EXPAND_PID" 2>/dev/null; do
+    EXPAND_ELAPSED=$(( $(date +%s) - EXPAND_START ))
+    EXPAND_PCT=$(( 5 + EXPAND_ELAPSED / 5 )); [ "$EXPAND_PCT" -gt 55 ] && EXPAND_PCT=55
+    draw_bar "$EXPAND_PCT" "Preparing package - ${EXPAND_ELAPSED}s"
+    if [ "$EXPAND_ELAPSED" -gt 0 ] && [ $((EXPAND_ELAPSED % 30)) -eq 0 ]; then
+      printf '\n    Still preparing the package (%dm %ds)\n' $((EXPAND_ELAPSED / 60)) $((EXPAND_ELAPSED % 60))
+    fi
+    sleep 1
+  done
+  wait "$EXPAND_PID" || true
+  echo
+fi
+if [ -n "$EXPAND_DIR" ] && [ -d "$EXPAND_DIR" ]; then
   CANDIDATE="$(find "$EXPAND_DIR" -name '*.pkg' 2>/dev/null | head -n 1)"
   if [ -n "$CANDIDATE" ] && [ -d "$CANDIDATE" ]; then
     if pkgutil --flatten "$CANDIDATE" "$EXPAND_DIR/payload.pkg" >/dev/null 2>&1; then
