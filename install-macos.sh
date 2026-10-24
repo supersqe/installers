@@ -47,6 +47,9 @@ if ! sudo -n true 2>/dev/null; then
   sudo -v || fail 'Administrator access is required to install SuperSQE.'
 fi
 
+warn 'Note: the installation can take up to 20 minutes depending on your network'
+warn 'speed and Mac configuration (the first boot prepares the database).'
+
 # ---- Existing installation? (upgrades keep the port + admin account) ------
 IS_UPGRADE=0
 if [ -f "$CFG" ]; then
@@ -117,6 +120,14 @@ sudo installer -pkg "$OUT" -target / -allowUntrusted -verboseR >"$INSTALL_LOG" 2
 INSTALL_PID=$!
 INSTALL_START=$(date +%s)
 LAST_PHASE=""
+TICK_AT=0
+TICKS=(
+  "Copying application files and the bundled browser runtime..."
+  "Unpacking the bundled PostgreSQL database and runner agents..."
+  "Configuring the installation and the bundled components..."
+  "Running package scripts and preparing the server..."
+  "Finishing the install - this can take up to 20 minutes in total..."
+)
 while kill -0 "$INSTALL_PID" 2>/dev/null; do
   ELAPSED=$(( $(date +%s) - INSTALL_START ))
   PHASE="$(grep -E 'PHASE:' "$INSTALL_LOG" 2>/dev/null | tail -n 1 | sed 's/.*PHASE: *//' || true)"
@@ -130,6 +141,11 @@ while kill -0 "$INSTALL_PID" 2>/dev/null; do
     *)            PCT=$(( 5 + ELAPSED / 4 )); [ "$PCT" -gt 85 ] && PCT=85 ;;
   esac
   draw_bar "$PCT" "Installing package - ${ELAPSED}s ${PHASE}"
+  if [ $((ELAPSED - TICK_AT)) -ge 60 ]; then
+    TICK_AT=$ELAPSED
+    IDX=$(( ELAPSED / 60 - 1 )); [ "$IDX" -lt 0 ] && IDX=0; [ "$IDX" -ge ${#TICKS[@]} ] && IDX=$(( ${#TICKS[@]} - 1 ))
+    printf '\n    %s (%dm %ds)\n' "${TICKS[$IDX]}" $((ELAPSED / 60)) $((ELAPSED % 60))
+  fi
   LAST_PHASE="$PHASE"
   sleep 1
 done
@@ -157,6 +173,14 @@ fi
 log 'Waiting for the first boot (database + schema) - this can take a few minutes'
 BOOT_START=$(date +%s)
 READY=""
+TICK_AT=0
+BOOT_TICKS=(
+  "Initialising the bundled PostgreSQL database..."
+  "Applying the database schema (first boot only)..."
+  "Creating the administrator account and the Welcome Pack..."
+  "Starting the SuperSQE server and verifying health..."
+  "Still starting - first boot can take several minutes on slower Macs..."
+)
 for _ in {1..150}; do
   ELAPSED=$(( $(date +%s) - BOOT_START ))
   PCT=$(( 90 + ELAPSED / 6 )); [ "$PCT" -gt 99 ] && PCT=99
@@ -165,6 +189,11 @@ for _ in {1..150}; do
   fi
   if curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then READY=1; fi
   draw_bar "$PCT" "Starting server - ${ELAPSED}s"
+  if [ $((ELAPSED - TICK_AT)) -ge 60 ]; then
+    TICK_AT=$ELAPSED
+    IDX=$(( ELAPSED / 60 - 1 )); [ "$IDX" -lt 0 ] && IDX=0; [ "$IDX" -ge ${#BOOT_TICKS[@]} ] && IDX=$(( ${#BOOT_TICKS[@]} - 1 ))
+    printf '\n    %s (%dm %ds)\n' "${BOOT_TICKS[$IDX]}" $((ELAPSED / 60)) $((ELAPSED % 60))
+  fi
   sleep 2
 done
 echo
@@ -179,6 +208,8 @@ if sudo test -f "$DATA_DIR/welcome.txt"; then
 fi
 
 log "Installation complete - http://127.0.0.1:$ACTUAL_PORT"
+echo "  Welcome Pack:              $DATA_DIR/welcome.txt"
+echo "  Administrator credentials: $DATA_DIR/admin-credentials.txt"
 echo
 if sudo test -f "$DATA_DIR/welcome.txt"; then
   echo '---------------------------- Welcome Pack ----------------------------'

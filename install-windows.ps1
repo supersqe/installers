@@ -46,6 +46,11 @@ if (-not $isAdmin) {
   exit
 }
 
+Write-Host ""
+Write-Host "  Note: the installation can take up to 20 minutes depending on your" -ForegroundColor DarkGray
+Write-Host "  network speed and PC configuration (the first boot prepares the database)." -ForegroundColor DarkGray
+Write-Host ""
+
 # ---- Existing installation? (upgrades keep the port + admin account) ------
 $dataDir = Join-Path $env:ProgramFiles 'SuperSQE\data'
 $existingCfg = Join-Path $dataDir 'config.env'
@@ -182,6 +187,14 @@ $proc = Start-Process -FilePath $installerPath -ArgumentList $installArgs -PassT
 $started = Get-Date
 $lastStatus = ''
 $lastBeat = 0
+$progressNotes = @(
+  'Copying application files and the bundled browser runtime...',
+  'Unpacking the bundled PostgreSQL database and runner agents...',
+  'Preparing the database and applying the schema (first boot)...',
+  'Registering the SuperSQE Windows service...',
+  'Starting the server and waiting for the health check...',
+  'Still working - installs can take up to 20 minutes on slower PCs...'
+)
 while (-not $proc.HasExited) {
   $elapsed = [int]((Get-Date) - $started).TotalSeconds
   $pct = [Math]::Min(30, 5 + [int]($elapsed / 2))
@@ -204,9 +217,11 @@ while (-not $proc.HasExited) {
 
   Write-Progress -Activity 'SuperSQE installation' -Status "$phase - ${elapsed}s" `
     -PercentComplete $pct -CurrentOperation $lastStatus
-  if ($elapsed - $lastBeat -ge 30) {
+  if ($elapsed - $lastBeat -ge 60) {
     $lastBeat = $elapsed
-    WarnMsg "still installing... ${elapsed}s ($phase)"
+    $noteIndex = [Math]::Min($progressNotes.Count - 1, [int][Math]::Floor($elapsed / 60) - 1)
+    if ($noteIndex -lt 0) { $noteIndex = 0 }
+    WarnMsg ("{0} ({1}m {2}s)" -f $progressNotes[$noteIndex], [int]($elapsed / 60), ($elapsed % 60))
   }
   Start-Sleep -Milliseconds 700
 }
@@ -226,6 +241,13 @@ Step 'Waiting for the first boot (database + schema) - this can take a few minut
 $bootStart = Get-Date
 $ready = $false
 $lastBootBeat = 0
+$bootNotes = @(
+  'Initialising the bundled PostgreSQL database...',
+  'Applying the database schema (first boot only)...',
+  'Creating the administrator account and the Welcome Pack...',
+  'Starting the SuperSQE server and verifying health...',
+  'Still starting - first boot can take several minutes on slower PCs...'
+)
 for ($i = 0; $i -lt 150; $i++) {
   $elapsed = [int]((Get-Date) - $bootStart).TotalSeconds
   $pct = [Math]::Min(99, 90 + [int]($elapsed / 5))
@@ -236,9 +258,11 @@ for ($i = 0; $i -lt 150; $i++) {
     $resp = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
     if ($resp.StatusCode -eq 200) { $ready = $true; break }
   } catch { }
-  if ($elapsed - $lastBootBeat -ge 30) {
+  if ($elapsed - $lastBootBeat -ge 60) {
     $lastBootBeat = $elapsed
-    WarnMsg "still starting... ${elapsed}s"
+    $noteIndex = [Math]::Min($bootNotes.Count - 1, [int][Math]::Floor($elapsed / 60) - 1)
+    if ($noteIndex -lt 0) { $noteIndex = 0 }
+    WarnMsg ("{0} ({1}m {2}s)" -f $bootNotes[$noteIndex], [int]($elapsed / 60), ($elapsed % 60))
   }
   Start-Sleep -Seconds 2
 }
@@ -262,6 +286,10 @@ Write-Host ""
 Write-Host "  SuperSQE is installed and running." -ForegroundColor Green
 Write-Host "  URL:      http://localhost:$actualPort"
 Write-Host "  Data dir: $dataDir"
+Write-Host ""
+Write-Host "  Welcome Pack:            $welcome"
+Write-Host "  Administrator credentials: $creds"
+Write-Host "  (open the credentials file with Notepad - it is protected to your account)"
 Write-Host ""
 
 if ($welcomeText) {

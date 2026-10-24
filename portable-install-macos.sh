@@ -56,6 +56,9 @@ fi
 
 [ "$(uname -s)" = "Darwin" ] || fail "This script is for macOS."
 
+warn 'Note: the installation can take up to 20 minutes depending on your network'
+warn 'speed and Mac configuration (the first boot prepares the database).'
+
 # ---- First-run configuration (port + administrator email) -----------------
 NEW_CONFIG=0
 if [ ! -f "$CFG" ]; then
@@ -173,11 +176,24 @@ echo $! > "$DATA_DIR/server.pid"
 log "Waiting for http://127.0.0.1:$PORT/api/health ..."
 UP=""
 BOOT_START=$(date +%s)
+TICK_AT=0
+BOOT_TICKS=(
+  "Initialising the bundled PostgreSQL database..."
+  "Applying the database schema (first boot only)..."
+  "Creating the administrator account and the Welcome Pack..."
+  "Starting the SuperSQE server and verifying health..."
+  "Still starting - first boot can take several minutes on slower Macs..."
+)
 for _ in {1..150}; do
   if curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then UP=1; break; fi
   ELAPSED=$(( $(date +%s) - BOOT_START ))
   PCT=$(( 10 + ELAPSED / 2 )); [ "$PCT" -gt 95 ] && PCT=95
   draw_bar "$PCT" "Starting server (database + schema) - ${ELAPSED}s"
+  if [ $((ELAPSED - TICK_AT)) -ge 60 ]; then
+    TICK_AT=$ELAPSED
+    IDX=$(( ELAPSED / 60 - 1 )); [ "$IDX" -lt 0 ] && IDX=0; [ "$IDX" -ge ${#BOOT_TICKS[@]} ] && IDX=$(( ${#BOOT_TICKS[@]} - 1 ))
+    printf '\n    %s (%dm %ds)\n' "${BOOT_TICKS[$IDX]}" $((ELAPSED / 60)) $((ELAPSED % 60))
+  fi
   sleep 2
 done
 echo
