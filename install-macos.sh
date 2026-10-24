@@ -50,22 +50,25 @@ fi
 warn 'Note: the installation can take up to 20 minutes depending on your network'
 warn 'speed and Mac configuration (the first boot prepares the database).'
 
-# ---- Existing installation? (upgrades keep the port + admin account) ------
+# ---- Existing installation? (data is kept; port/email can change) ---------
 IS_UPGRADE=0
+CFG_PORT=""
+CFG_EMAIL=""
 if [ -f "$CFG" ]; then
   IS_UPGRADE=1
   CFG_PORT="$(sudo grep -E '^PORT=' "$CFG" 2>/dev/null | cut -d= -f2- || true)"
-  [ -n "$CFG_PORT" ] && PORT="${PORT:-$CFG_PORT}"
-  log "Existing SuperSQE installation detected - upgrades keep port ${PORT:-?} and the administrator account."
-  log "(To change the port later: edit $CFG and restart the service.)"
+  CFG_EMAIL="$(sudo grep -E '^SUPERSQE_ADMIN_EMAIL=' "$CFG" 2>/dev/null | cut -d= -f2- || true)"
+  log "Existing SuperSQE installation detected - your data is kept."
+  log "You can change the web port and administrator email below (Enter keeps them)."
 fi
 
 # ---- Port -----------------------------------------------------------------
-if [ "$IS_UPGRADE" = "0" ] && [ -z "$PORT" ]; then
-  read -r -p "Web port [3000]: " PORT
-  PORT="${PORT:-3000}"
+DEFAULT_PORT="${CFG_PORT:-3000}"
+if [ -z "$PORT" ]; then
+  read -r -p "Web port [$DEFAULT_PORT]: " PORT
+  PORT="${PORT:-$DEFAULT_PORT}"
 fi
-PORT="${PORT:-3000}"
+PORT="${PORT:-$DEFAULT_PORT}"
 case "$PORT" in ''|*[!0-9]*) fail "Invalid port: $PORT" ;; esac
 if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then fail "Invalid port: $PORT (1-65535)"; fi
 if [ "$IS_UPGRADE" = "0" ] && lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
@@ -74,18 +77,22 @@ if [ "$IS_UPGRADE" = "0" ] && lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&
   case "$ans" in y|Y|yes) ;; *) fail 'Installation cancelled - choose a free port and run again.' ;; esac
 fi
 
-# ---- Administrator email (required on first install) --------------------
-if [ "$IS_UPGRADE" = "0" ]; then
-  while true; do
-    if [ -z "$ADMIN_EMAIL" ]; then
+# ---- Administrator email (required on first install; changeable on upgrade)
+DEFAULT_EMAIL="${CFG_EMAIL:-admin@supersqe.local}"
+while true; do
+  if [ -z "$ADMIN_EMAIL" ]; then
+    if [ "$IS_UPGRADE" = "1" ]; then
+      read -r -p "Administrator email [$DEFAULT_EMAIL] (Enter to keep): " ADMIN_EMAIL
+      [ -z "$ADMIN_EMAIL" ] && ADMIN_EMAIL="$DEFAULT_EMAIL"
+    else
       read -r -p 'Administrator email (required - this is your SuperSQE login): ' ADMIN_EMAIL
     fi
-    case "$ADMIN_EMAIL" in
-      *@*.*) break ;;
-      *) warn 'Enter a valid email address, for example name@company.com'; ADMIN_EMAIL="" ;;
-    esac
-  done
-fi
+  fi
+  case "$ADMIN_EMAIL" in
+    *@*.*) break ;;
+    *) warn 'Enter a valid email address, for example name@company.com'; ADMIN_EMAIL="" ;;
+  esac
+done
 
 # ---- Download -------------------------------------------------------------
 ARCH="$(uname -m)"; [ "$ARCH" = "arm64" ] || ARCH=x64

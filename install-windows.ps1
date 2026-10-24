@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   SuperSQE interactive command-line installer for Windows.
 
@@ -56,15 +56,18 @@ $dataDir = Join-Path $env:ProgramFiles 'SuperSQE\data'
 $existingCfg = Join-Path $dataDir 'config.env'
 $isUpgrade = Test-Path $existingCfg
 $existingPort = 0
+$existingEmail = ''
 if ($isUpgrade) {
   try {
     $portLine = Select-String -Path $existingCfg -Pattern '^PORT=(\d+)' -ErrorAction Stop | Select-Object -First 1
     if ($portLine) { $existingPort = [int]$portLine.Matches[0].Groups[1].Value }
   } catch { }
-  if ($existingPort -gt 0) { $Port = $existingPort }
+  try {
+    $emailLine = Select-String -Path $existingCfg -Pattern '^SUPERSQE_ADMIN_EMAIL=(.*)' -ErrorAction Stop | Select-Object -First 1
+    if ($emailLine) { $existingEmail = $emailLine.Matches[0].Groups[1].Value.Trim() }
+  } catch { }
   Step "Existing SuperSQE installation detected"
-  Write-Host "    Upgrades keep your current configuration: port $existingPort and the existing administrator account."
-  Write-Host "    (To change the port later: edit $existingCfg and restart 'SuperSQE Server'.)"
+  Write-Host "    Your data is kept. You can change the web port and administrator email below."
 }
 
 # ---- Optional: Defender exclusion (much faster installs) -----------------
@@ -89,11 +92,12 @@ try {
 }
 
 # ---- Port ----------------------------------------------------------------
-if (-not $isUpgrade -and $Port -eq 0) {
-  $entered = Read-Host 'Web port [3000]'
-  if ([string]::IsNullOrWhiteSpace($entered)) { $Port = 3000 } else { $Port = [int]$entered }
+$defaultPort = if ($isUpgrade -and $existingPort -gt 0) { $existingPort } else { 3000 }
+if ($Port -eq 0) {
+  $entered = Read-Host "Web port [$defaultPort]"
+  if ([string]::IsNullOrWhiteSpace($entered)) { $Port = $defaultPort } else { $Port = [int]$entered }
 }
-if ($Port -eq 0) { $Port = 3000 }
+if ($Port -eq 0) { $Port = $defaultPort }
 if ($Port -lt 1 -or $Port -gt 65535) { FailMsg "Invalid port '$Port' - use a number between 1 and 65535." }
 
 $portInUse = $false
@@ -107,9 +111,13 @@ if ($portInUse -and -not $isUpgrade -and -not $Force) {
   if ($answer -notmatch '^(y|yes)$') { FailMsg 'Installation cancelled. Choose a free port and run again.' }
 }
 
-# ---- Administrator email (required on first install) --------------------
+# ---- Administrator email (required on first install; changeable on upgrade)
 if ($isUpgrade) {
-  if (-not $AdminEmail) { $AdminEmail = 'unchanged@supersqe.local' }
+  if (-not $AdminEmail) {
+    $defaultEmail = if ($existingEmail) { $existingEmail } else { 'admin@supersqe.local' }
+    $enteredEmail = (Read-Host "Administrator email [$defaultEmail] (Enter to keep)").Trim()
+    if ([string]::IsNullOrWhiteSpace($enteredEmail)) { $AdminEmail = $defaultEmail } else { $AdminEmail = $enteredEmail }
+  }
 } else {
   if (-not $AdminEmail) {
     while ($true) {
