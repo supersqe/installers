@@ -406,6 +406,24 @@ chmod +x "$START_SCRIPT"
 cp "$START_SCRIPT" "$HOME/Desktop/SuperSQE.command"
 chmod +x "$HOME/Desktop/SuperSQE.command"
 
+# Branded URL shortcut (matches the configured port). The .command above starts
+# the server; this opens the UI once it is running.
+WEBLOC="$HOME/Desktop/SuperSQE.webloc"
+WEBLOC_TEMPLATE="$INSTALL_DIR/resources/SuperSQE.webloc"
+if [ -f "$WEBLOC_TEMPLATE" ]; then
+  ditto "$WEBLOC_TEMPLATE" "$WEBLOC" 2>/dev/null || cp "$WEBLOC_TEMPLATE" "$WEBLOC"
+  /usr/libexec/PlistBuddy -c "Set :URL http://127.0.0.1:$PORT" "$WEBLOC" 2>/dev/null || true
+else
+  cat > "$WEBLOC" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict><key>URL</key><string>http://127.0.0.1:$PORT</string></dict>
+</plist>
+EOF
+fi
+chmod 644 "$WEBLOC" 2>/dev/null || true
+
 # ---- One-click agent install URL handler (supersqe-runner://) --------------
 RUNNER_APP="$HOME/Applications/SuperSQE Runner.app"
 RUNNER_INSTALLER="$INSTALL_DIR/service/install-runner.sh"
