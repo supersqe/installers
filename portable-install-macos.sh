@@ -20,7 +20,7 @@ DATA_DIR="$HOME/supersqe-data"
 # Resolve the latest published release when no version was supplied.
 if [ -z "${SUPERSQE_VERSION:-}" ]; then
   LATEST="$(curl -fsSL --max-time 15 https://api.github.com/repos/supersqe/installers/releases/latest 2>/dev/null | grep -m1 '"tag_name"' | sed -E 's/.*"v?([0-9.]+)".*/\1/' || true)"
-  VERSION="${LATEST:-1.0.8}"
+  VERSION="${LATEST:-1.0.10}"
 else
   VERSION="$SUPERSQE_VERSION"
 fi
@@ -62,6 +62,62 @@ fi
 
 [ "$(uname -s)" = "Darwin" ] || fail "This script is for macOS."
 
+if [ "$(id -u)" -eq 0 ]; then
+  fail 'Do not run the portable installer with sudo - it installs into your user account. Run it as your normal macOS user.'
+fi
+
+# Refuse to inherit root-owned files from a previous `sudo` run: PostgreSQL
+# cannot start if its data directory belongs to another user.
+if [ -e "$DATA_DIR" ] && [ "$(stat -f%u "$DATA_DIR" 2>/dev/null || echo "$(id -u)")" != "$(id -u)" ]; then
+  fail "The data folder $DATA_DIR belongs to another user (usually from a previous sudo run). Fix it with:
+    sudo chown -R $(id -u):$(id -g) \"$DATA_DIR\" \"$INSTALL_DIR\"
+  then run this installer again."
+fi
+if [ -e "$INSTALL_DIR" ] && [ "$(stat -f%u "$INSTALL_DIR" 2>/dev/null || echo "$(id -u)")" != "$(id -u)" ]; then
+  fail "The install folder $INSTALL_DIR belongs to another user. Fix it with:
+    sudo chown -R $(id -u):$(id -g) \"$INSTALL_DIR\"
+  then run this installer again."
+fi
+
+# Pick a free PostgreSQL port. The system .pkg install (or another database)
+# may already hold 5433; the portable install must coexist without sudo.
+pick_pg_port() {
+  local p="${1:-5433}" i=0
+  while [ "$i" -lt 50 ]; do
+    if ! lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
+      printf '%s' "$p"
+      return 0
+    fi
+    p=$((p + 1))
+    i=$((i + 1))
+  done
+  printf '%s' "$p"
+}
+
+# Stop only this user's portable instance (never the system .pkg services).
+stop_previous_install() {
+  if [ -f "$DATA_DIR/server.pid" ]; then
+    kill "$(cat "$DATA_DIR/server.pid")" 2>/dev/null || true
+    rm -f "$DATA_DIR/server.pid"
+  fi
+  if [ -x "$INSTALL_DIR/postgres/bin/pg_ctl" ] && [ -f "$DATA_DIR/pgdata/PG_VERSION" ]; then
+    log "Stopping the previous PostgreSQL instance..."
+    "$INSTALL_DIR/postgres/bin/pg_ctl" -D "$DATA_DIR/pgdata" stop -m fast >/dev/null 2>&1 || true
+  fi
+  # Orphaned processes whose install dir was already replaced.
+  pkill -f "$DATA_DIR/pgdata" 2>/dev/null || true
+  pkill -f "$INSTALL_DIR/runtime/supersqe-server" 2>/dev/null || true
+  # Remove a stale lock file left by a crash (dead PID only).
+  local pidfile="$DATA_DIR/pgdata/postmaster.pid"
+  if [ -f "$pidfile" ]; then
+    local pid
+    pid="$(sed -n '1p' "$pidfile" 2>/dev/null || true)"
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$pidfile"
+    fi
+  fi
+}
+
 warn 'Note: the installation can take up to 20 minutes depending on your network'
 warn 'speed and Mac configuration (the first boot prepares the database).'
 
@@ -94,6 +150,16 @@ else
   PORT="${PORT:-3000}"
   log "Existing installation found - keeping $CFG (port $PORT)"
 fi
+
+# Stop the previous portable instance and choose a free PostgreSQL port.
+stop_previous_install
+
+if [ -f "$CFG" ]; then
+  CUR_PG="$(grep -E '^SUPERSQE_PG_PORT=' "$CFG" 2>/dev/null | cut -d= -f2- || true)"
+  [ -n "$CUR_PG" ] && PG_PORT="$CUR_PG"
+fi
+PG_PORT="$(pick_pg_port "$PG_PORT")"
+log "PostgreSQL port: $PG_PORT"
 
 # ---- 1. Get the .pkg (local path or download the latest release) ----------
 PKG="${1:-}"
@@ -194,6 +260,47 @@ EOF
   chmod 600 "$CFG"
 fi
 
+# ---- 4b. Apply changed port/email settings on upgrade ---------------------
+if [ -f "$CFG" ]; then
+  CUR_PG="$(grep -E '^SUPERSQE_PG_PORT=' "$CFG" 2>/dev/null | cut -d= -f2- || true)"
+  if [ -n "$CUR_PG" ] && [ "$CUR_PG" != "$PG_PORT" ]; then
+    if grep -q '^SUPERSQE_PG_PORT=' "$CFG"; then
+      sed -i '' "s|^SUPERSQE_PG_PORT=.*|SUPERSQE_PG_PORT=$PG_PORT|" "$CFG"
+    else
+      echo "SUPERSQE_PG_PORT=$PG_PORT" >> "$CFG"
+    fi
+    sed -i '' -E "s|(postgresql://[^@]+@127\.0\.0\.1:)[0-9]+/|\1$PG_PORT/|" "$CFG"
+    log "PostgreSQL port updated to $PG_PORT"
+  fi
+
+  CUR_PORT="$(grep -E '^PORT=' "$CFG" 2>/dev/null | cut -d= -f2- || true)"
+  if [ -n "$PORT" ] && [ "$CUR_PORT" != "$PORT" ]; then
+    if grep -q '^PORT=' "$CFG"; then
+      sed -i '' "s|^PORT=.*|PORT=$PORT|" "$CFG"
+    else
+      echo "PORT=$PORT" >> "$CFG"
+    fi
+    if grep -q '^NEXTAUTH_URL=' "$CFG"; then
+      sed -i '' "s|^NEXTAUTH_URL=.*|NEXTAUTH_URL=http://localhost:$PORT|" "$CFG"
+    else
+      echo "NEXTAUTH_URL=http://localhost:$PORT" >> "$CFG"
+    fi
+    log "Web port updated to $PORT"
+  fi
+
+  if [ -n "$ADMIN_EMAIL" ]; then
+    CUR_MAIL="$(grep -E '^SUPERSQE_ADMIN_EMAIL=' "$CFG" 2>/dev/null | cut -d= -f2- || true)"
+    if [ "$CUR_MAIL" != "$ADMIN_EMAIL" ]; then
+      if grep -q '^SUPERSQE_ADMIN_EMAIL=' "$CFG"; then
+        sed -i '' "s|^SUPERSQE_ADMIN_EMAIL=.*|SUPERSQE_ADMIN_EMAIL=$ADMIN_EMAIL|" "$CFG"
+      else
+        echo "SUPERSQE_ADMIN_EMAIL=$ADMIN_EMAIL" >> "$CFG"
+      fi
+      log "Administrator email updated to $ADMIN_EMAIL"
+    fi
+  fi
+fi
+
 # ---- 5. Start the server (it bootstraps postgres + schema + admin itself) --
 log "Starting SuperSQE (first run initialises the bundled PostgreSQL)..."
 export SUPERSQE_INSTALL_DIR="$INSTALL_DIR"
@@ -231,7 +338,8 @@ for _ in {1..150}; do
 done
 echo
 if [ -z "$UP" ]; then
-  echo "--- last 40 log lines ---"; tail -n 40 "$DATA_DIR/logs/server.log" || true
+  echo "--- last 40 server log lines ---"; tail -n 40 "$DATA_DIR/logs/server.log" || true
+  echo "--- last 40 PostgreSQL log lines ---"; tail -n 40 "$DATA_DIR/logs/postgres.log" 2>/dev/null || true
   fail "server did not become healthy - see $DATA_DIR/logs/server.log"
 fi
 
@@ -250,7 +358,53 @@ echo "  Admin     : $DATA_DIR/welcome.txt   (system admin credentials)"
 echo "  Logs      : $DATA_DIR/logs/server.log"
 echo "  Stop      : $0 stop"
 echo "  Restart   : $0"
+echo "  Desktop   : ~/Desktop/SuperSQE.command (start + open in browser)"
 echo
+
+# ---- 8. Desktop shortcut: start the server + open the browser -------------
+START_SCRIPT="$INSTALL_DIR/start-supersqe.sh"
+cat > "$START_SCRIPT" <<'EOS'
+#!/bin/bash
+set -u
+INSTALL_DIR="$HOME/supersqe"
+DATA_DIR="$HOME/supersqe-data"
+CFG="$DATA_DIR/config.env"
+if [ ! -f "$CFG" ]; then
+  echo "SuperSQE is not installed in $INSTALL_DIR."
+  read -n 1 -s -r -p "Press any key to close..."
+  exit 1
+fi
+PORT="$(grep -E '^PORT=' "$CFG" | cut -d= -f2- | tr -d '[:space:]' || true)"
+[ -n "$PORT" ] || PORT=3000
+export SUPERSQE_INSTALL_DIR="$INSTALL_DIR"
+export SUPERSQE_DATA_DIR="$DATA_DIR"
+export PLAYWRIGHT_BROWSERS_PATH="$INSTALL_DIR/browsers"
+export NODE_ENV=production
+if ! curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
+  echo "Starting SuperSQE on port $PORT..."
+  mkdir -p "$DATA_DIR/logs"
+  cd "$INSTALL_DIR/supersqe-server" || exit 1
+  nohup "$INSTALL_DIR/runtime/supersqe-server" -r tsconfig-paths/register dist/server.js \
+    >> "$DATA_DIR/logs/server.log" 2>&1 &
+  echo $! > "$DATA_DIR/server.pid"
+  n=0
+  while [ "$n" -lt 120 ]; do
+    if curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then break; fi
+    n=$((n + 1))
+    sleep 2
+  done
+fi
+if curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
+  open "http://127.0.0.1:$PORT"
+else
+  echo "SuperSQE did not start. Last log lines:"
+  tail -n 30 "$DATA_DIR/logs/server.log" 2>/dev/null || true
+  read -n 1 -s -r -p "Press any key to close..."
+fi
+EOS
+chmod +x "$START_SCRIPT"
+cp "$START_SCRIPT" "$HOME/Desktop/SuperSQE.command"
+chmod +x "$HOME/Desktop/SuperSQE.command"
 
 # ---- One-click agent install URL handler (supersqe-runner://) --------------
 RUNNER_APP="$HOME/Applications/SuperSQE Runner.app"
