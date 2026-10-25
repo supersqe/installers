@@ -1,0 +1,10 @@
+# Never commit secrets, keys or licenses
+.env
+.env.*
+*.pem
+*.key
+*.lic
+*.p12
+*.pfx
+*.kdbx
+secrets/
