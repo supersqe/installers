@@ -46,6 +46,7 @@ draw_bar() {
 }
 
 [ "$(uname -s)" = "Darwin" ] || fail "This script is for macOS."
+log 'System install: dedicated server mode (/opt + /var). For a client Mac use the Portable install.'
 
 warn 'Note: the installation can take up to 20 minutes depending on your network'
 warn 'speed and Mac configuration (the first boot prepares the database).'
@@ -60,6 +61,31 @@ if sudo test -f "$CFG"; then
   CFG_EMAIL="$(sudo grep -E '^SUPERSQE_ADMIN_EMAIL=' "$CFG" 2>/dev/null | cut -d= -f2- || true)"
   log "Existing SuperSQE installation detected - your data is kept."
   log "You can change the web port and administrator email below (Enter keeps them)."
+fi
+
+# ---- Portable installation guard ------------------------------------------
+# The System server is a separate deployment (/opt + /var). It cannot and must
+# not "upgrade" a Portable install in ~/supersqe-data. Warn instead of silently
+# creating a second server with separate data and credentials.
+PORTABLE_HOME="$HOME"
+if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+  PORTABLE_HOME="$(eval echo "~$SUDO_USER")"
+fi
+if [ -f "$PORTABLE_HOME/supersqe-data/config.env" ]; then
+  warn 'A Portable SuperSQE installation already exists for this user.'
+  warn 'The System installer creates a SEPARATE server under /opt and /var; it does NOT update Portable.'
+  warn 'For a client Mac, update the Portable installation with the Portable command.'
+  if [ "${SUPERSQE_ALLOW_SYSTEM_ALONGSIDE:-0}" != "1" ]; then
+    if [ -t 0 ]; then
+      read -r -p 'Install a separate System server anyway? (y/N) ' ans
+      case "$ans" in
+        y|Y|yes) ;;
+        *) fail 'Cancelled - update the Portable installation instead (recommended).' ;;
+      esac
+    else
+      fail 'Cancelled - set SUPERSQE_ALLOW_SYSTEM_ALONGSIDE=1 only if a second server is intentional.'
+    fi
+  fi
 fi
 
 # ---- Port -----------------------------------------------------------------
