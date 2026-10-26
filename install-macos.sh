@@ -317,7 +317,12 @@ for _ in {1..150}; do
   sleep 2
 done
 echo
-[ -n "$READY" ] || warn 'The server is still starting - it will be ready in a few minutes.'
+if [ -z "$READY" ]; then
+  echo "--- server log ---"; sudo tail -n 80 "$DATA_DIR/logs/server.log" 2>/dev/null || true
+  echo "--- PostgreSQL log ---"; sudo tail -n 80 "$DATA_DIR/logs/postgres.log" 2>/dev/null || true
+  echo "--- postinstall log ---"; sudo tail -n 120 /var/log/supersqe-install.log 2>/dev/null || true
+  fail 'The server did not become healthy. See the logs above.'
+fi
 
 echo
 # The actual port may differ from the requested one on upgrades.
@@ -344,7 +349,9 @@ if sudo test -f "$DATA_DIR/welcome.txt"; then
 elif sudo test -f "$DATA_DIR/admin-credentials.txt"; then
   sudo cat "$DATA_DIR/admin-credentials.txt"
 else
-  warn "Welcome Pack not written yet - read it shortly at $DATA_DIR/welcome.txt"
+  echo "--- server log ---"; sudo tail -n 80 "$DATA_DIR/logs/server.log" 2>/dev/null || true
+  echo "--- postinstall log ---"; sudo tail -n 120 /var/log/supersqe-install.log 2>/dev/null || true
+  fail "Welcome Pack was not generated - administrator bootstrap failed."
 fi
 
 open "http://127.0.0.1:$ACTUAL_PORT" 2>/dev/null || true
