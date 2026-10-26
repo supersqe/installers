@@ -54,7 +54,7 @@ warn 'speed and Mac configuration (the first boot prepares the database).'
 IS_UPGRADE=0
 CFG_PORT=""
 CFG_EMAIL=""
-if [ -f "$CFG" ]; then
+if sudo test -f "$CFG"; then
   IS_UPGRADE=1
   CFG_PORT="$(sudo grep -E '^PORT=' "$CFG" 2>/dev/null | cut -d= -f2- || true)"
   CFG_EMAIL="$(sudo grep -E '^SUPERSQE_ADMIN_EMAIL=' "$CFG" 2>/dev/null | cut -d= -f2- || true)"
