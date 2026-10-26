@@ -354,4 +354,12 @@ else
   fail "Welcome Pack was not generated - administrator bootstrap failed."
 fi
 
+if sudo test -f "$DATA_DIR/welcome.txt"; then
+  sudo cp "$DATA_DIR/welcome.txt" "$HOME/Desktop/SuperSQE-Welcome.txt"
+  sudo chown "$(id -u):$(id -g)" "$HOME/Desktop/SuperSQE-Welcome.txt"
+  chmod 600 "$HOME/Desktop/SuperSQE-Welcome.txt"
+  echo "  Login saved:               $HOME/Desktop/SuperSQE-Welcome.txt"
+  echo
+fi
+
 open "http://127.0.0.1:$ACTUAL_PORT" 2>/dev/null || true

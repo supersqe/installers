@@ -49,6 +49,7 @@ draw_bar() {
 
 # ---- stop -----------------------------------------------------------------
 if [ "${1:-}" = "stop" ]; then
+  launchctl bootout "gui/$(id -u)/com.supersqe.server.agent" 2>/dev/null || true
   log "Stopping SuperSQE server..."
   [ -f "$DATA_DIR/server.pid" ] && kill "$(cat "$DATA_DIR/server.pid")" 2>/dev/null || true
   rm -f "$DATA_DIR/server.pid"
@@ -96,6 +97,7 @@ pick_pg_port() {
 
 # Stop only this user's portable instance (never the system .pkg services).
 stop_previous_install() {
+  launchctl bootout "gui/$(id -u)/com.supersqe.server.agent" 2>/dev/null || true
   if [ -f "$DATA_DIR/server.pid" ]; then
     kill "$(cat "$DATA_DIR/server.pid")" 2>/dev/null || true
     rm -f "$DATA_DIR/server.pid"
@@ -359,6 +361,11 @@ echo "  Logs      : $DATA_DIR/logs/server.log"
 echo "  Stop      : $0 stop"
 echo "  Restart   : $0"
 echo "  Desktop   : ~/Desktop/SuperSQE.command (start + open in browser)"
+if [ -f "$DATA_DIR/welcome.txt" ]; then
+  cp "$DATA_DIR/welcome.txt" "$HOME/Desktop/SuperSQE-Welcome.txt"
+  chmod 600 "$HOME/Desktop/SuperSQE-Welcome.txt"
+  echo "  Login     : ~/Desktop/SuperSQE-Welcome.txt"
+fi
 echo
 
 # ---- 8. Desktop shortcut: start the server + open the browser -------------
@@ -383,10 +390,14 @@ export NODE_ENV=production
 if ! curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
   echo "Starting SuperSQE on port $PORT..."
   mkdir -p "$DATA_DIR/logs"
-  cd "$INSTALL_DIR/supersqe-server" || exit 1
-  nohup "$INSTALL_DIR/runtime/supersqe-server" -r tsconfig-paths/register dist/server.js \
-    >> "$DATA_DIR/logs/server.log" 2>&1 &
-  echo $! > "$DATA_DIR/server.pid"
+  if /bin/launchctl print "gui/$(id -u)/com.supersqe.server.agent" >/dev/null 2>&1; then
+    /bin/launchctl kickstart -k "gui/$(id -u)/com.supersqe.server.agent" >/dev/null 2>&1 || true
+  else
+    cd "$INSTALL_DIR/supersqe-server" || exit 1
+    nohup "$INSTALL_DIR/runtime/supersqe-server" -r tsconfig-paths/register dist/server.js \
+      >> "$DATA_DIR/logs/server.log" 2>&1 &
+    echo $! > "$DATA_DIR/server.pid"
+  fi
   n=0
   while [ "$n" -lt 120 ]; do
     if curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then break; fi
@@ -399,6 +410,7 @@ if curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
 else
   echo "SuperSQE did not start. Last log lines:"
   tail -n 30 "$DATA_DIR/logs/server.log" 2>/dev/null || true
+  tail -n 30 "$DATA_DIR/logs/agent.err.log" 2>/dev/null || true
   read -n 1 -s -r -p "Press any key to close..."
 fi
 EOS
@@ -423,6 +435,39 @@ else
 EOF
 fi
 chmod 644 "$WEBLOC" 2>/dev/null || true
+
+# ---- Auto-start at login (per-user LaunchAgent) ---------------------------
+AGENT_PLIST="$HOME/Library/LaunchAgents/com.supersqe.server.agent.plist"
+mkdir -p "$HOME/Library/LaunchAgents"
+cat > "$AGENT_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.supersqe.server.agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$INSTALL_DIR/runtime/supersqe-server</string>
+    <string>-r</string><string>tsconfig-paths/register</string><string>dist/server.js</string>
+  </array>
+  <key>WorkingDirectory</key><string>$INSTALL_DIR/supersqe-server</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key><string>production</string>
+    <key>SUPERSQE_INSTALL_DIR</key><string>$INSTALL_DIR</string>
+    <key>SUPERSQE_DATA_DIR</key><string>$DATA_DIR</string>
+    <key>PLAYWRIGHT_BROWSERS_PATH</key><string>$INSTALL_DIR/browsers</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>15</integer>
+  <key>StandardOutPath</key><string>$DATA_DIR/logs/agent.out.log</string>
+  <key>StandardErrorPath</key><string>$DATA_DIR/logs/agent.err.log</string>
+</dict>
+</plist>
+EOF
+chmod 644 "$AGENT_PLIST"
+log "Auto-start at login enabled (com.supersqe.server.agent)"
 
 # ---- One-click agent install URL handler (supersqe-runner://) --------------
 RUNNER_APP="$HOME/Applications/SuperSQE Runner.app"
